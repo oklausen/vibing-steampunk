@@ -14,11 +14,20 @@ func Compile(mod *Module, className string) string {
 	return c.emit()
 }
 
+// blockKind tracks what ABAP construct a WASM block maps to.
+type blockKind int
+
+const (
+	blockDO blockKind = iota // block/loop → DO ... ENDDO
+	blockIF                  // if → IF ... ENDIF
+)
+
 type compiler struct {
-	mod       *Module
-	className string
-	sb        strings.Builder
-	indent    int
+	mod        *Module
+	className  string
+	sb         strings.Builder
+	indent     int
+	blockStack []blockKind // tracks what to close on OpEnd
 }
 
 func (c *compiler) emit() string {
@@ -75,13 +84,10 @@ func (c *compiler) emitDefinition() {
 	c.line("METHODS mem_st_i32_16 IMPORTING iv_addr TYPE i iv_val TYPE i.")
 	c.line("METHODS mem_grow IMPORTING iv_pages TYPE i RETURNING VALUE(rv) TYPE i.")
 
-	// Internal functions (non-exported)
+	// Internal functions (non-exported only — exported are already in PUBLIC SECTION)
 	for i, f := range c.mod.Functions {
-		if f.Type != nil {
+		if f.Type != nil && f.ExportName == "" {
 			name := fmt.Sprintf("f%d", i)
-			if f.ExportName != "" {
-				name = sanitizeABAP(f.ExportName)
-			}
 			c.emitMethodSignature(name, f.Type, false)
 		}
 	}
@@ -296,9 +302,18 @@ func (c *compiler) emitFunction(name string, f *Function) {
 
 	_ = totalLocals
 
+	// Branch depth flag (for multi-level br)
+	c.line("DATA lv_br TYPE i.")
+
 	// Emit instructions
 	stack := &virtualStack{}
+	c.blockStack = nil // reset block stack for each function
 	c.emitInstructions(f, f.Code, stack, 0)
+
+	// Assign return value from top of stack
+	if len(f.Type.Results) > 0 && stack.depth > 0 {
+		c.line("rv = %s.", stack.peek())
+	}
 
 	c.indent--
 	c.line("ENDMETHOD.")
@@ -501,22 +516,31 @@ func (c *compiler) emitInstructions(f *Function, code []Instruction, stack *virt
 		case OpBlock:
 			c.line("DO 1 TIMES. \" block")
 			c.indent++
+			c.blockStack = append(c.blockStack, blockDO)
 		case OpLoop:
 			c.line("DO. \" loop")
 			c.indent++
+			c.blockStack = append(c.blockStack, blockDO)
 		case OpIf:
 			cond := stack.pop()
-			c.line("IF %s <> 0. \" if", cond)
+			c.line("IF %s <> 0.", cond)
 			c.indent++
+			c.blockStack = append(c.blockStack, blockIF)
 		case OpElse:
 			c.indent--
 			c.line("ELSE.")
 			c.indent++
 		case OpEnd:
-			if blockDepth > 0 || c.indent > 2 {
+			if len(c.blockStack) > 0 {
+				kind := c.blockStack[len(c.blockStack)-1]
+				c.blockStack = c.blockStack[:len(c.blockStack)-1]
 				c.indent--
-				// Determine if this ends a DO or IF
-				c.line("ENDDO. \" end")
+				switch kind {
+				case blockIF:
+					c.line("ENDIF.")
+				case blockDO:
+					c.line("ENDDO.")
+				}
 			}
 		case OpBr:
 			if inst.LabelIndex == 0 {
@@ -547,7 +571,249 @@ func (c *compiler) emitInstructions(f *Function, code []Instruction, stack *virt
 			r := stack.push()
 			c.line("IF %s <> 0. %s = %s. ELSE. %s = %s. ENDIF.", cond, r, a, r, b)
 
-		// Conversions (simplified)
+		// i64 arithmetic (same patterns as i32 — ABAP INT8 handles it)
+		case OpI64Add:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s + %s.", r, a, b)
+		case OpI64Sub:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s - %s.", r, a, b)
+		case OpI64Mul:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s * %s.", r, a, b)
+		case OpI64DivS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s / %s.", r, a, b)
+		case OpI64DivU:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>div_u64( iv_a = %s iv_b = %s ).", r, a, b)
+		case OpI64RemS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s MOD %s.", r, a, b)
+		case OpI64RemU:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>rem_u64( iv_a = %s iv_b = %s ).", r, a, b)
+		case OpI64And:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>and64( iv_a = %s iv_b = %s ).", r, a, b)
+		case OpI64Or:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>or64( iv_a = %s iv_b = %s ).", r, a, b)
+		case OpI64Xor:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>xor64( iv_a = %s iv_b = %s ).", r, a, b)
+		case OpI64Shl:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>shl64( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI64ShrS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>shr_s64( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI64ShrU:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>shr_u64( iv_val = %s iv_shift = %s ).", r, a, b)
+
+		// i64 comparisons
+		case OpI64Eqz:
+			a := stack.pop()
+			r := stack.push()
+			c.line("IF %s = 0. %s = 1. ELSE. %s = 0. ENDIF.", a, r, r)
+		case OpI64Eq:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s = %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64Ne:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s <> %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64LtS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s < %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64GtS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s > %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64LeS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s <= %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64GeS:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s >= %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpI64LtU, OpI64GtU, OpI64LeU, OpI64GeU:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			op := "lt"
+			switch inst.Op {
+			case OpI64GtU:
+				op = "gt"
+			case OpI64LeU:
+				op = "le"
+			case OpI64GeU:
+				op = "ge"
+			}
+			c.line("IF zcl_wasm_rt=>%s_u64( iv_a = %s iv_b = %s ) = abap_true. %s = 1. ELSE. %s = 0. ENDIF.", op, a, b, r, r)
+
+		// i32 rotl/rotr/clz/ctz/popcnt
+		case OpI32Rotl:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>rotl32( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI32Rotr:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>rotr32( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI32Clz:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>clz32( %s ).", r, a)
+		case OpI32Ctz:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>ctz32( %s ).", r, a)
+		case OpI32Popcnt:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>popcnt32( %s ).", r, a)
+
+		// i64 rotl/rotr/clz/ctz/popcnt
+		case OpI64Rotl:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>rotl64( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI64Rotr:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>rotr64( iv_val = %s iv_shift = %s ).", r, a, b)
+		case OpI64Clz:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>clz64( %s ).", r, a)
+		case OpI64Ctz:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>ctz64( %s ).", r, a)
+		case OpI64Popcnt:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>popcnt64( %s ).", r, a)
+
+		// f64 arithmetic
+		case OpF64Add:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s + %s.", r, a, b)
+		case OpF64Sub:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s - %s.", r, a, b)
+		case OpF64Mul:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s * %s.", r, a, b)
+		case OpF64Div:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("%s = %s / %s.", r, a, b)
+
+		// f64 comparisons
+		case OpF64Eq:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s = %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpF64Ne:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s <> %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpF64Lt:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s < %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpF64Gt:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s > %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpF64Le:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s <= %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+		case OpF64Ge:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s >= %s. %s = 1. ELSE. %s = 0. ENDIF.", a, b, r, r)
+
+		// i64 memory
+		case OpI64Load:
+			addr := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>mem_ld_i64( iv_mem = mv_mem iv_addr = %s + %d ).", r, addr, inst.Offset)
+		case OpI64Store:
+			val, addr := stack.pop(), stack.pop()
+			c.line("zcl_wasm_rt=>mem_st_i64( EXPORTING iv_val = %s iv_addr = %s + %d CHANGING cv_mem = mv_mem ).", val, addr, inst.Offset)
+		case OpI64Load8S, OpI64Load8U, OpI64Load16S, OpI64Load16U, OpI64Load32S, OpI64Load32U:
+			addr := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>mem_ld_i64_ext( iv_mem = mv_mem iv_addr = %s + %d iv_op = %d ).", r, addr, inst.Offset, inst.Op)
+		case OpI64Store8, OpI64Store16, OpI64Store32:
+			val, addr := stack.pop(), stack.pop()
+			c.line("zcl_wasm_rt=>mem_st_i64_trunc( EXPORTING iv_val = %s iv_addr = %s + %d iv_op = %d CHANGING cv_mem = mv_mem ).", val, addr, inst.Offset, inst.Op)
+
+		// i32 load16s, store16
+		case OpI32Load16S:
+			addr := stack.pop()
+			r := stack.push()
+			if inst.Offset > 0 {
+				c.line("%s = zcl_wasm_rt=>mem_ld_i32_16s( iv_mem = mv_mem iv_addr = %s + %d ).", r, addr, inst.Offset)
+			} else {
+				c.line("%s = zcl_wasm_rt=>mem_ld_i32_16s( iv_mem = mv_mem iv_addr = %s ).", r, addr)
+			}
+		case OpI32Load16U:
+			addr := stack.pop()
+			r := stack.push()
+			if inst.Offset > 0 {
+				c.line("%s = mem_ld_i32_16u( %s + %d ).", r, addr, inst.Offset)
+			} else {
+				c.line("%s = mem_ld_i32_16u( %s ).", r, addr)
+			}
+		case OpI32Store16:
+			val, addr := stack.pop(), stack.pop()
+			if inst.Offset > 0 {
+				c.line("mem_st_i32_16( iv_addr = %s + %d iv_val = %s ).", addr, inst.Offset, val)
+			} else {
+				c.line("mem_st_i32_16( iv_addr = %s iv_val = %s ).", addr, val)
+			}
+
+		// f32/f64 load/store
+		case OpF32Load:
+			addr := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>mem_ld_f32( iv_mem = mv_mem iv_addr = %s + %d ).", r, addr, inst.Offset)
+		case OpF64Load:
+			addr := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>mem_ld_f64( iv_mem = mv_mem iv_addr = %s + %d ).", r, addr, inst.Offset)
+		case OpF32Store:
+			val, addr := stack.pop(), stack.pop()
+			c.line("zcl_wasm_rt=>mem_st_f32( EXPORTING iv_val = %s iv_addr = %s + %d CHANGING cv_mem = mv_mem ).", val, addr, inst.Offset)
+		case OpF64Store:
+			val, addr := stack.pop(), stack.pop()
+			c.line("zcl_wasm_rt=>mem_st_f64( EXPORTING iv_val = %s iv_addr = %s + %d CHANGING cv_mem = mv_mem ).", val, addr, inst.Offset)
+
+		// Conversions
 		case OpI32WrapI64:
 			a := stack.pop()
 			r := stack.push()
@@ -555,11 +821,152 @@ func (c *compiler) emitInstructions(f *Function, code []Instruction, stack *virt
 		case OpI64ExtendI32S:
 			a := stack.pop()
 			r := stack.push()
-			c.line("%s = %s. \" i64.extend_i32_s", r, a)
+			c.line("%s = %s. \" i64.extend_i32_s (noop in ABAP - sign preserved)", r, a)
 		case OpI64ExtendI32U:
 			a := stack.pop()
 			r := stack.push()
 			c.line("%s = zcl_wasm_rt=>extend_u32( %s ).", r, a)
+		case OpI32TruncF64S, OpI32TruncF32S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = trunc( %s ).", r, a)
+		case OpI32TruncF64U, OpI32TruncF32U:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>trunc_f_u32( %s ).", r, a)
+		case OpI64TruncF64S, OpI64TruncF32S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = trunc( %s ).", r, a)
+		case OpF64ConvertI32S, OpF64ConvertI64S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = %s. \" convert to f64", r, a)
+		case OpF64ConvertI32U:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend_u32( %s ). \" f64.convert_i32_u", r, a)
+		case OpF64PromoteF32:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = %s. \" f64.promote_f32 (noop in ABAP)", r, a)
+		case OpF32DemoteF64:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = %s. \" f32.demote_f64 (precision loss ok)", r, a)
+		case OpF32ConvertI32S, OpF32ConvertI64S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = %s. \" convert to f32", r, a)
+		case OpI32ReinterpretF32:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>reinterpret_f32_i32( %s ).", r, a)
+		case OpF32ReinterpretI32:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>reinterpret_i32_f32( %s ).", r, a)
+		case OpI64ReinterpretF64:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>reinterpret_f64_i64( %s ).", r, a)
+		case OpF64ReinterpretI64:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>reinterpret_i64_f64( %s ).", r, a)
+
+		// Sign extension
+		case OpI32Extend8S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend8s_i32( %s ).", r, a)
+		case OpI32Extend16S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend16s_i32( %s ).", r, a)
+		case OpI64Extend8S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend8s_i64( %s ).", r, a)
+		case OpI64Extend16S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend16s_i64( %s ).", r, a)
+		case OpI64Extend32S:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = zcl_wasm_rt=>extend32s_i64( %s ).", r, a)
+
+		// call_indirect
+		case OpCallIndirect:
+			c.emitCallIndirect(f, inst.TypeIndex, inst.TableIndex, stack)
+
+		// Misc prefix (0xFC)
+		case OpMiscPrefix:
+			switch inst.MiscOp {
+			case MiscMemoryCopy:
+				n, src, dst := stack.pop(), stack.pop(), stack.pop()
+				c.line("zcl_wasm_rt=>mem_copy( EXPORTING iv_dst = %s iv_src = %s iv_n = %s CHANGING cv_mem = mv_mem ).", dst, src, n)
+			case MiscMemoryFill:
+				n, val, dst := stack.pop(), stack.pop(), stack.pop()
+				c.line("zcl_wasm_rt=>mem_fill( EXPORTING iv_dst = %s iv_val = %s iv_n = %s CHANGING cv_mem = mv_mem ).", dst, val, n)
+			default:
+				c.line("\" TODO: misc opcode 0xFC 0x%02X", inst.MiscOp)
+			}
+
+		// f64 math functions
+		case OpF64Abs:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = abs( %s ).", r, a)
+		case OpF64Neg:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = - %s.", r, a)
+		case OpF64Ceil:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = ceil( %s ).", r, a)
+		case OpF64Floor:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = floor( %s ).", r, a)
+		case OpF64Sqrt:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = sqrt( %s ).", r, a)
+		case OpF64Trunc:
+			a := stack.pop()
+			r := stack.push()
+			c.line("%s = trunc( %s ).", r, a)
+		case OpF64Min:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s < %s. %s = %s. ELSE. %s = %s. ENDIF.", a, b, r, a, r, b)
+		case OpF64Max:
+			b, a := stack.pop(), stack.pop()
+			r := stack.push()
+			c.line("IF %s > %s. %s = %s. ELSE. %s = %s. ENDIF.", a, b, r, a, r, b)
+
+		// br_table
+		case OpBrTable:
+			idx := stack.pop()
+			c.line("CASE %s.", idx)
+			c.indent++
+			for i, label := range inst.Labels {
+				if label == 0 {
+					c.line("WHEN %d. EXIT.", i)
+				} else {
+					c.line("WHEN %d. lv_br = %d. EXIT.", i, label)
+				}
+			}
+			if inst.DefaultLabel == 0 {
+				c.line("WHEN OTHERS. EXIT.")
+			} else {
+				c.line("WHEN OTHERS. lv_br = %d. EXIT.", inst.DefaultLabel)
+			}
+			c.indent--
+			c.line("ENDCASE.")
 
 		default:
 			c.line("\" TODO: opcode 0x%02X", inst.Op)
@@ -622,6 +1029,40 @@ func (c *compiler) emitCall(f *Function, funcIndex int, stack *virtualStack) {
 		} else {
 			c.line("%s( ).", name)
 		}
+	}
+}
+
+func (c *compiler) emitCallIndirect(f *Function, typeIndex, tableIndex int, stack *virtualStack) {
+	if typeIndex >= len(c.mod.Types) {
+		c.line("\" ERROR: invalid type index %d for call_indirect", typeIndex)
+		return
+	}
+	ft := &c.mod.Types[typeIndex]
+
+	// Pop the table index from stack
+	tableIdx := stack.pop()
+
+	// Pop arguments
+	args := make([]string, len(ft.Params))
+	for i := len(args) - 1; i >= 0; i-- {
+		args[i] = stack.pop()
+	}
+
+	// Read function index from table
+	c.line("DATA(lv_ci_func) = mt_tab%d[ %s + 1 ]. \" call_indirect", tableIndex, tableIdx)
+
+	// Generate dispatch
+	var paramParts []string
+	for i, a := range args {
+		paramParts = append(paramParts, fmt.Sprintf("p%d = %s", i, a))
+	}
+	paramStr := strings.Join(paramParts, " ")
+
+	if len(ft.Results) > 0 {
+		result := stack.push()
+		c.line("%s = dispatch_t%d( iv_idx = lv_ci_func %s ).", result, typeIndex, paramStr)
+	} else {
+		c.line("dispatch_t%d( iv_idx = lv_ci_func %s ).", typeIndex, paramStr)
 	}
 }
 
