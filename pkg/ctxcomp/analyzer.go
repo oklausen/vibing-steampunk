@@ -76,6 +76,20 @@ type ScanToken struct {
 }
 
 // Analyzer combines all layers for comprehensive code intelligence.
+//
+// Confidence model:
+//   1.0  — parser + SAP layer (scan or cross) agree
+//   0.95 — parser + regex agree (no SAP needed)
+//   0.9  — parser only (authoritative — reads actual source)
+//   0.85 — SCAN ABAP-SOURCE only (SAP kernel, reliable)
+//   0.8  — CROSS index + regex agree
+//   0.6  — CROSS index only (may be stale — only updated on activation)
+//   0.3  — regex only (likely false positive — found in string/comment)
+//
+// Key insight: CROSS/WBCROSSGT tables can be stale (inactive objects,
+// $TMP, unactivated changes). The abaplint parser is the real-time
+// ground truth — it parses actual source, not an index snapshot.
+// Use parser as primary harness, CROSS as supplementary confirmation.
 type Analyzer struct {
 	adtProvider ADTProvider // nil = offline mode (layers 3, 3b only)
 }
@@ -157,11 +171,39 @@ func (a *Analyzer) Analyze(ctx context.Context, source, objectName string) *Anal
 		}
 	}
 
-	// Calculate confidence based on how many layers agree
+	// Calculate confidence — parser is the authority, CROSS is supplementary
+	// Parser-confirmed = real. Regex-only = suspect. CROSS-only = stale but notable.
 	for _, dep := range merged {
-		if dep.Confidence == 0 {
-			dep.Confidence = float64(len(dep.FoundBy)) / float64(len(result.Layers))
+		if dep.Confidence > 0 {
+			continue // already set (e.g., false positive)
 		}
+
+		hasParser := containsLayer(dep.FoundBy, LayerParser)
+		hasRegex := containsLayer(dep.FoundBy, LayerRegex)
+		hasScan := containsLayer(dep.FoundBy, LayerScan)
+		hasCross := containsLayer(dep.FoundBy, LayerCross)
+
+		switch {
+		case hasParser && (hasScan || hasCross):
+			dep.Confidence = 1.0 // confirmed by parser + SAP layer
+		case hasParser && hasRegex:
+			dep.Confidence = 0.95 // confirmed by parser (regex agrees)
+		case hasParser:
+			dep.Confidence = 0.9 // parser says yes (authoritative)
+		case hasScan:
+			dep.Confidence = 0.85 // SAP kernel tokenizer says yes
+		case hasCross && hasRegex:
+			dep.Confidence = 0.8 // CROSS index + regex agree
+		case hasCross:
+			dep.Confidence = 0.6 // CROSS only — might be stale but notable
+			dep.InComment = false // not a false positive, just from index
+		case hasRegex:
+			dep.Confidence = 0.3 // regex only — likely false positive
+			dep.InString = true
+		default:
+			dep.Confidence = 0.1
+		}
+
 		if dep.Confidence >= 0.5 {
 			result.TrueDeps++
 		}
