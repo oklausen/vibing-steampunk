@@ -253,8 +253,10 @@ CLASS zcl_wasm_codegen IMPLEMENTATION.
         IF lv_len >= 7 AND ( iv(7) = 'METHOD ' OR iv(7) = 'METHODS' ).
           lv_np = abap_true.
         ENDIF.
-      WHEN 'T'. " TYPES
+      WHEN 'T'. " TYPES, TRY
         IF lv_len >= 5 AND iv(5) = 'TYPES'.
+          lv_np = abap_true.
+        ELSEIF lv_len >= 4 AND iv(4) = 'TRY.'.
           lv_np = abap_true.
         ENDIF.
       WHEN 'W'. " WHILE
@@ -488,8 +490,11 @@ CLASS zcl_wasm_codegen IMPLEMENTATION.
         " --- Constants ---
         WHEN 65. " i32.const
           line( |{ push( ) } = { ls_i-i32_value }.| ).
-        WHEN 66. " i64.const
-          line( |{ push( ) } = { ls_i-i64_value }.| ).
+        WHEN 66. " i64.const — truncate to 32-bit for TYPE i
+          DATA(lv_i64) = ls_i-i64_value MOD 4294967296.
+          IF lv_i64 < 0. lv_i64 = lv_i64 + 4294967296. ENDIF.
+          IF lv_i64 > 2147483647. lv_i64 = lv_i64 - 4294967296. ENDIF.
+          line( |{ push( ) } = { lv_i64 }.| ).
 
         " --- Local/Global access ---
         WHEN 32. " local.get
@@ -555,10 +560,10 @@ CLASS zcl_wasm_codegen IMPLEMENTATION.
           line( |gv_xa = { lv_a }. gv_xb = { lv_b }. gv_xr = gv_xa BIT-XOR gv_xb. { lv_r } = gv_xr.| ).
         WHEN 116. " i32.shl
           lv_b = pop( ). lv_a = pop( ). lv_r = push( ).
-          line( |{ lv_r } = { lv_a } * ipow( base = 2 exp = { lv_b } MOD 32 ).| ).
+          line( |TRY. { lv_r } = { lv_a } * ipow( base = 2 exp = { lv_b } MOD 32 ). CATCH cx_root. { lv_r } = 0. ENDTRY.| ).
         WHEN 117. " i32.shr_s
           lv_b = pop( ). lv_a = pop( ). lv_r = push( ).
-          line( |{ lv_r } = { lv_a } / ipow( base = 2 exp = { lv_b } MOD 32 ).| ).
+          line( |TRY. { lv_r } = { lv_a } / ipow( base = 2 exp = { lv_b } MOD 32 ). CATCH cx_root. { lv_r } = 0. ENDTRY.| ).
 
         " --- Memory (pre-calculate addr+offset for PERFORM) ---
         WHEN 40. " i32.load
