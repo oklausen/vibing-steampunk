@@ -182,9 +182,36 @@ CLASS zcl_wasm_codegen IMPLEMENTATION.
       ENDIF.
       line( |{ lv_isig }.| ).
       mv_indent = mv_indent + 1.
-      IF lines( ls_itype-results ) > 0.
-        line( |rv = 0.| ).
-      ENDIF.
+      CASE ls_imp-name.
+        WHEN 'fd_write'.
+          " fd_write(fd, iovs_ptr, iovs_len, nwritten_ptr) → errno
+          line( |DATA lv_ww TYPE i. lv_ww = 0.| ).
+          line( |DO p2 TIMES.| ).
+          mv_indent = mv_indent + 1.
+          line( |DATA lv_wip TYPE i. lv_wip = p1 + ( sy-index - 1 ) * 8.| ).
+          line( |DATA lv_wsp TYPE i. PERFORM mem_ld_i32 USING lv_wip CHANGING lv_wsp.| ).
+          line( |DATA lv_wsl TYPE i. lv_wsl = lv_wip + 4. PERFORM mem_ld_i32 USING lv_wsl CHANGING lv_wsl.| ).
+          line( |IF lv_wsl > 0 AND lv_wsp + lv_wsl <= xstrlen( gv_mem ).| ).
+          mv_indent = mv_indent + 1.
+          line( |DATA lv_wb TYPE xstring. lv_wb = gv_mem+lv_wsp(lv_wsl).| ).
+          line( |DATA lv_ws TYPE string.| ).
+          line( |cl_abap_conv_in_ce=>create( input = lv_wb encoding = 'UTF-8' )->read( IMPORTING data = lv_ws ).| ).
+          line( |WRITE lv_ws.| ).
+          mv_indent = mv_indent - 1.
+          line( |ENDIF.| ).
+          line( |lv_ww = lv_ww + lv_wsl.| ).
+          mv_indent = mv_indent - 1.
+          line( |ENDDO.| ).
+          line( |PERFORM mem_st_i32 USING p3 lv_ww. rv = 0.| ).
+        WHEN 'fd_read'.
+          line( |PERFORM mem_st_i32 USING p3 0. rv = 0.| ).
+        WHEN 'proc_exit'.
+          line( |RETURN.| ).
+        WHEN OTHERS.
+          IF lines( ls_itype-results ) > 0.
+            line( |rv = 0.| ).
+          ENDIF.
+      ENDCASE.
       mv_indent = mv_indent - 1.
       line( |ENDFORM.| ).
       line( || ).
