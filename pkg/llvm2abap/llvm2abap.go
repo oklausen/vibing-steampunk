@@ -869,23 +869,14 @@ func (c *abapCompiler) emitMethod(fn *Function) {
 		for _, v := range vars {
 			decls = append(decls, fmt.Sprintf("%s TYPE %s", v.name, v.typ))
 		}
-		// Split DATA declarations to stay under 240 chars per line
-		current := "DATA:"
-		for i, d := range decls {
-			sep := ","
-			if i == len(decls)-1 {
-				sep = "."
+		// Emit DATA declarations — max 5 per line for transpiler compatibility
+		for i := 0; i < len(decls); i += 5 {
+			end := i + 5
+			if end > len(decls) {
+				end = len(decls)
 			}
-			entry := " " + d + sep
-			if len(current)+len(entry) > 235 {
-				c.line("%s", current)
-				current = "     " + d + sep // continuation indent
-			} else {
-				current += entry
-			}
-		}
-		if current != "" {
-			c.line("%s", current)
+			chunk := decls[i:end]
+			c.line("DATA: %s.", strings.Join(chunk, ", "))
 		}
 	}
 
