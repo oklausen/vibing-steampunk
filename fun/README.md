@@ -97,6 +97,36 @@ pkg/llvm2abap/output/zllvm_test_01.zip   — 34 functions + 17 unit tests
 pkg/llvm2abap/output/quickjs_llvm.zip    — QuickJS 537 functions, 124K lines
 ```
 
+## 8. The Full Chain: abaplint on QuickJS-from-LLVM
+
+```bash
+# Step 1: Build QuickJS from C via LLVM IR
+curl -L bellard.org/quickjs/quickjs-2024-01-13.tar.xz | tar xJ -C /tmp/
+cd /tmp/quickjs-2024-01-13 && make qjs  # builds repl.c, qjscalc.c
+
+# Step 2: Compile all .c → .ll → .o → native binary
+for f in quickjs cutils libbf libregexp libunicode quickjs-libc qjs repl qjscalc; do
+  clang -S -emit-llvm -O1 -fPIC -DCONFIG_VERSION=\"test\" -D_GNU_SOURCE -DCONFIG_BIGNUM $f.c -o $f.ll 2>/dev/null
+  llc -filetype=obj -relocation-model=pic $f.ll -o ${f}_ll.o
+done
+clang -O1 *_ll.o -lm -ldl -lpthread -o /tmp/qjs_from_llvm
+
+# Step 3: Test — JavaScript on QuickJS-from-LLVM
+echo 'console.log([1,2,3].map(x=>x*x))' | /tmp/qjs_from_llvm --std
+# → 1,4,9
+
+# Step 4: Bundle abaplint for QuickJS
+npm install @abaplint/core
+npx esbuild your_script.js --bundle --format=iife --platform=node --external:crypto -o flat.js
+
+# Step 5: Run abaplint on QuickJS-from-LLVM
+/tmp/qjs_from_llvm flat.js
+# → Tokens: 15 (parses ABAP!)
+
+# Step 6: Compile QuickJS to ABAP for SAP (next session!)
+./vsp compile llvm /tmp/quickjs-2024-01-13/quickjs.c --class zcl_qjs --zip -o quickjs.zip
+```
+
 ---
 
 ## What gets compiled
