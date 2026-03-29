@@ -107,6 +107,14 @@ pkg/
 │       ├── oracle.js          # Node.js oracle using @abaplint/core
 │       └── oracle_fixtures.json # Oracle reference data
 │
+├── llvm2abap/                # LLVM IR → ABAP compiler (v2.33)
+│   ├── llvm2abap.go          # Parser + compiler (LLVM IR text → typed ABAP)
+│   ├── llvm2abap_test.go     # Unit tests (3 tests, 34-function corpus)
+│   ├── README.md             # Documentation
+│   └── testdata/
+│       ├── corpus.c           # 34-function C test corpus
+│       └── corpus.ll          # LLVM IR (clang -O1)
+│
 └── cache/                    # Caching infrastructure (Report 010)
     ├── cache.go              # Core interfaces and types
     ├── memory.go             # In-memory cache (default)
@@ -399,6 +407,9 @@ When creating a new report:
 | **CLI Toolchain** | ✅ Complete (v2.32 - 28 commands: query, grep, graph, deps, lint, parse, compile, execute) |
 | **WASM Self-Host** | ✅ Verified (v2.32 - 3-way proof: Native 51/51, Go OK, ABAP 11/11 on SAP) |
 | **TS→Go Transpiler** | ✅ Complete (v2.32 - produces valid Go from abaplint TS, 3 files compile) |
+| **LLVM IR→ABAP** | ✅ Complete (v2.33 - typed CLASS-METHODS, 34+28 functions, FatFS, SAP verified 5/5) |
+| **WASM Block-as-METHOD** | ✅ Complete (v2.33 - CLASS g, 12K methods, QuickJS GENERATE rc=0 on SAP) |
+| **TS→ABAP Pipeline** | ✅ Proven (v2.33 - Porffor→WASM→ABAP chain verified) |
 
 ### DSL & Workflow Usage
 

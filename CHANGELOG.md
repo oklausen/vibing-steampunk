@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.33.0] - 2026-03-29
+### Features
+
+- **LLVM IR → ABAP Compiler** (`pkg/llvm2abap`) — compiles LLVM IR text format to idiomatic typed ABAP:
+  - Typed CLASS-METHODS with `IMPORTING a TYPE i RETURNING VALUE(rv) TYPE i`
+  - Full type preservation: i32→TYPE i, i64→TYPE int8, double→TYPE f
+  - 34-function test corpus: add, factorial, fibonacci, gcd, is_prime, quadratic, structs, arrays
+  - FatFS R0.16 filesystem (7249 lines C) compiles to 8016 lines ABAP, 0 TODOs
+  - Basic block dispatcher with CASE/WHEN for complex control flow
+  - Phi node resolution with parallel temp vars for swap patterns
+  - Struct field access via getelementptr with offset calculation
+  - SAP verified: 5/5 tests pass (add, factorial, fibonacci, double, factorial_rec)
+  - Supports: alloca, switch, freeze, load/store, zext/sext/trunc, LLVM intrinsics
+
+- **WASM Block-as-CLASS-METHOD Codegen** — fixes QuickJS GENERATE on SAP:
+  - WASM blocks/loops → parameterless CLASS-METHODS on shared `CLASS g`
+  - 12K+ CLASS-METHODS, 3K+ CLASS-DATA for QuickJS (218K lines ABAP)
+  - QuickJS GENERATE SUBROUTINE POOL rc=0 on SAP a4h-105
+  - Dead code handler removed — `IF 1 = 1. br = N. EXIT. ENDIF.` pattern
+  - WASM_INIT + _START execute without exception on SAP
+
+- **TypeScript → ABAP Pipeline** — proven via Porffor AOT compiler:
+  - TypeScript → Porffor → WASM → Go wasmcomp → ABAP
+  - fibonacci.ts compiles through the full chain
+
+### Research
+- LLVM IR → ABAP compilation strategy with RTTC dynamic typed allocation
+- Comparison: WASM→ABAP (assembly-like) vs LLVM→ABAP (idiomatic typed)
+- MinZ collaboration: MIR2→WASM→ABAP and FatFS corpus sharing
+
 ## [2.32.0] - 2026-03-22
 ### Features
 
