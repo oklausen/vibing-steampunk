@@ -87,6 +87,7 @@ func (s *Server) registerTools(mode string, disabledGroups string, toolsConfig m
 	s.registerGitTools(shouldRegister)
 	s.registerReportTools(shouldRegister)
 	s.registerInstallTools(shouldRegister)
+	s.registerVersionHistoryTools(shouldRegister)
 
 	// Register tool aliases for common operations
 	s.registerToolAliases(shouldRegister)
@@ -1946,5 +1947,65 @@ func (s *Server) registerInstallTools(shouldRegister func(string) bool) {
 				mcp.Description("Deploy only objects matching this name pattern (e.g., 'ZCL_ABAPGIT_*')"),
 			),
 		), s.handleDeployZip)
+	}
+}
+
+// registerVersionHistoryTools registers version history and comparison tools.
+func (s *Server) registerVersionHistoryTools(shouldRegister func(string) bool) {
+	if shouldRegister("GetRevisions") {
+		s.mcpServer.AddTool(mcp.NewTool("GetRevisions",
+			mcp.WithDescription("List version history (revisions) of an ABAP object. Returns versions with dates, authors, and transport requests. Use version URIs with GetRevisionSource or CompareVersions."),
+			mcp.WithString("type",
+				mcp.Required(),
+				mcp.Description("Object type: PROG, CLAS, INTF, FUNC, INCL, DDLS, BDEF, SRVD"),
+			),
+			mcp.WithString("name",
+				mcp.Required(),
+				mcp.Description("Object name"),
+			),
+			mcp.WithString("include",
+				mcp.Description("Class include type for CLAS: main, definitions, implementations, macros, testclasses (default: main)"),
+			),
+			mcp.WithString("parent",
+				mcp.Description("Function group name (required for FUNC type)"),
+			),
+		), s.handleGetRevisions)
+	}
+
+	if shouldRegister("GetRevisionSource") {
+		s.mcpServer.AddTool(mcp.NewTool("GetRevisionSource",
+			mcp.WithDescription("Get source code of a specific version of an ABAP object. Use version_uri from GetRevisions output."),
+			mcp.WithString("version_uri",
+				mcp.Required(),
+				mcp.Description("Version URI from GetRevisions result (the 'uri' field of a revision entry)"),
+			),
+		), s.handleGetRevisionSource)
+	}
+
+	if shouldRegister("CompareVersions") {
+		s.mcpServer.AddTool(mcp.NewTool("CompareVersions",
+			mcp.WithDescription("Compare two versions of an ABAP object with unified diff. Use version URIs from GetRevisions. Use 'current' as version2_uri to compare against the active version."),
+			mcp.WithString("type",
+				mcp.Required(),
+				mcp.Description("Object type: PROG, CLAS, INTF, FUNC, INCL, DDLS, BDEF, SRVD"),
+			),
+			mcp.WithString("name",
+				mcp.Required(),
+				mcp.Description("Object name"),
+			),
+			mcp.WithString("version1_uri",
+				mcp.Required(),
+				mcp.Description("Version URI for first (older) version, from GetRevisions"),
+			),
+			mcp.WithString("version2_uri",
+				mcp.Description("Version URI for second (newer) version, from GetRevisions. Default: 'current' (compare against active version)"),
+			),
+			mcp.WithString("include",
+				mcp.Description("Class include type for CLAS: main, definitions, implementations, macros, testclasses"),
+			),
+			mcp.WithString("parent",
+				mcp.Description("Function group name (required for FUNC type)"),
+			),
+		), s.handleCompareVersions)
 	}
 }
