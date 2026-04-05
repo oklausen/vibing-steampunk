@@ -27,6 +27,11 @@ func toolGroups() map[string][]string {
 		"G": { // Git/abapGit tools (via ZADT_VSP WebSocket)
 			"GitTypes", "GitExport",
 		},
+		"GC": { // gCTS tools (git-enabled Change Transport System)
+			"GctsListRepositories", "GctsGetRepository", "GctsCreateRepository",
+			"GctsDeleteRepository", "GctsCloneRepository", "GctsPull",
+			"GctsCommit", "GctsListBranches", "GctsSwitchBranch", "GctsGetHistory",
+		},
 		"R": { // Report execution tools (via ZADT_VSP WebSocket)
 			"RunReport", "GetVariants", "GetTextElements", "SetTextElements",
 		},
