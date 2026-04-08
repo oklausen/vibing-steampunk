@@ -625,3 +625,52 @@ func TestTransport_Request_BothAuthMethods(t *testing.T) {
 		t.Error("Cookie should also be present when both auth methods are set")
 	}
 }
+
+func TestParseADTErrorMessage(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     string
+		expected string
+	}{
+		{
+			name: "ADT exception XML returns localized message",
+			body: `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework">` +
+				`<namespace id="http://www.sap.com/adt/wda/dataPreview"/>` +
+				`<type id="ExceptionDataPreviewGeneral"/>` +
+				`<message lang="EN">The client field "MANDT" cannot be specified in the WHERE condition. Client handling is performed by the compiler.</message>` +
+				`<localizedMessage lang="EN">The client field "MANDT" cannot be specified in the WHERE condition. Client handling is performed by the compiler.</localizedMessage>` +
+				`</exc:exception>`,
+			expected: `The client field "MANDT" cannot be specified in the WHERE condition. Client handling is performed by the compiler.`,
+		},
+		{
+			name:     "plain text body returned as-is",
+			body:     "Something went wrong",
+			expected: "Something went wrong",
+		},
+		{
+			name:     "empty body returned as-is",
+			body:     "",
+			expected: "",
+		},
+		{
+			name: "XML with only message (no localized)",
+			body: `<?xml version="1.0" encoding="utf-8"?><exc:exception xmlns:exc="http://www.sap.com/abapxml/types/communicationframework">` +
+				`<message lang="EN">Object not found</message></exc:exception>`,
+			expected: "Object not found",
+		},
+		{
+			name:     "session timeout text returned as-is",
+			body:     "ICMENOSESSION: Session Timed Out",
+			expected: "ICMENOSESSION: Session Timed Out",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseADTErrorMessage(tt.body)
+			if got != tt.expected {
+				t.Errorf("parseADTErrorMessage() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}

@@ -3,6 +3,7 @@ package adt
 import (
 	"bytes"
 	"context"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -157,7 +158,7 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
 	if resp.StatusCode >= 400 {
 		apiErr := &APIError{
 			StatusCode: resp.StatusCode,
-			Message:    string(body),
+			Message:    parseADTErrorMessage(string(body)),
 			Path:       path,
 		}
 
@@ -244,7 +245,7 @@ func (t *Transport) retryRequest(ctx context.Context, path string, opts *Request
 	if resp.StatusCode >= 400 {
 		return nil, &APIError{
 			StatusCode: resp.StatusCode,
-			Message:    string(body),
+			Message:    parseADTErrorMessage(string(body)),
 			Path:       path,
 		}
 	}
@@ -431,6 +432,33 @@ type APIError struct {
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("ADT API error: status %d at %s: %s", e.StatusCode, e.Path, e.Message)
+}
+
+// adtException is the XML structure returned by SAP ADT for error responses.
+type adtException struct {
+	XMLName   xml.Name `xml:"exception"`
+	Message   string   `xml:"message"`
+	Localized string   `xml:"localizedMessage"`
+}
+
+// parseADTErrorMessage extracts a human-readable message from an ADT XML error
+// response body. If parsing fails, the raw body is returned as-is.
+func parseADTErrorMessage(body string) string {
+	if !strings.Contains(body, "<exc:exception") && !strings.Contains(body, "<exception") {
+		return body
+	}
+	var exc adtException
+	if err := xml.Unmarshal([]byte(body), &exc); err != nil {
+		return body
+	}
+	// Prefer localized message, fall back to message
+	if exc.Localized != "" {
+		return exc.Localized
+	}
+	if exc.Message != "" {
+		return exc.Message
+	}
+	return body
 }
 
 // IsNotFound returns true if the error is a 404 Not Found error.

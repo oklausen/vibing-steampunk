@@ -3,6 +3,7 @@ package adt
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -242,6 +243,36 @@ func (p *FeatureProber) probeHANA(ctx context.Context) (bool, string, error) {
 	return false, fmt.Sprintf("non-HANA database: %s", info.DatabaseSystem), nil
 }
 
+// endpointExists checks if an ADT endpoint is available by making a HEAD request.
+// Treats 400 (bad request) and 405 (method not allowed) as "endpoint exists"
+// since these indicate the endpoint is registered but the HTTP method or
+// parameters are wrong. Only 404 means the endpoint doesn't exist.
+// 403 is treated as "exists but not authorized" — feature is NOT available.
+func (p *FeatureProber) endpointExists(ctx context.Context, path string) (bool, string, error) {
+	_, err := p.client.transport.Request(ctx, path, &RequestOptions{
+		Method: http.MethodHead,
+	})
+	if err != nil {
+		// Use existing helpers and proper APIError extraction
+		if IsNotFoundError(err) {
+			return false, "endpoint not available", nil
+		}
+		var apiErr *APIError
+		if errors.As(err, &apiErr) {
+			switch apiErr.StatusCode {
+			case http.StatusBadRequest, http.StatusMethodNotAllowed:
+				// 400/405 = endpoint exists but method/params wrong
+				return true, "endpoint available", nil
+			case http.StatusForbidden:
+				// 403 = endpoint exists but no authorization for current user
+				return false, fmt.Sprintf("endpoint exists but forbidden: %s", apiErr.Message), nil
+			}
+		}
+		return false, "", err
+	}
+	return true, "endpoint available", nil
+}
+
 // probeAbapGit checks if abapGit is installed
 func (p *FeatureProber) probeAbapGit(ctx context.Context) (bool, string, error) {
 	// Search for abapGit interface - it's the primary indicator
@@ -269,24 +300,14 @@ func (p *FeatureProber) probeAbapGit(ctx context.Context) (bool, string, error) 
 
 // probeRAP checks if RAP development tools are available
 func (p *FeatureProber) probeRAP(ctx context.Context) (bool, string, error) {
-	// Check if DDLS endpoint exists
-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/ddic/ddl/sources", &RequestOptions{
-		Method: http.MethodOptions,
-	})
+	exists, msg, err := p.endpointExists(ctx, "/sap/bc/adt/ddic/ddl/sources")
 	if err != nil {
-		// Check if it's a 404 vs connection error
-		if strings.Contains(err.Error(), "404") {
-			return false, "DDLS endpoint not available", nil
-		}
 		return false, "", err
 	}
-
-	// OPTIONS returning 200 or 405 means endpoint exists
-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+	if exists {
 		return true, "RAP endpoints available", nil
 	}
-
-	return false, "RAP endpoints not responding", nil
+	return false, fmt.Sprintf("DDLS %s", msg), nil
 }
 
 // probeAMDP checks if AMDP debugging is available
@@ -297,62 +318,38 @@ func (p *FeatureProber) probeAMDP(ctx context.Context) (bool, string, error) {
 		return false, "AMDP requires HANA database", nil
 	}
 
-	// Check if AMDP debugger endpoint exists
-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/debugger/amdp/sessions", &RequestOptions{
-		Method: http.MethodOptions,
-	})
+	exists, msg, err := p.endpointExists(ctx, "/sap/bc/adt/debugger/amdp/sessions")
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			return false, "AMDP debugger endpoint not available", nil
-		}
 		return false, "", err
 	}
-
-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+	if exists {
 		return true, "AMDP debugger available", nil
 	}
-
-	return false, "AMDP debugger not responding", nil
+	return false, fmt.Sprintf("AMDP debugger %s", msg), nil
 }
 
 // probeUI5 checks if UI5/Fiori BSP management is available
 func (p *FeatureProber) probeUI5(ctx context.Context) (bool, string, error) {
-	// Check if UI5 repository endpoint exists
-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/filestore/ui5-bsp", &RequestOptions{
-		Method: http.MethodOptions,
-	})
+	exists, msg, err := p.endpointExists(ctx, "/sap/bc/adt/filestore/ui5-bsp")
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			return false, "UI5 BSP endpoint not available", nil
-		}
 		return false, "", err
 	}
-
-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+	if exists {
 		return true, "UI5 BSP repository available", nil
 	}
-
-	return false, "UI5 BSP not responding", nil
+	return false, fmt.Sprintf("UI5 BSP %s", msg), nil
 }
 
 // probeTransport checks if CTS transport management is available
 func (p *FeatureProber) probeTransport(ctx context.Context) (bool, string, error) {
-	// Check if transport endpoint exists
-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/cts/transports", &RequestOptions{
-		Method: http.MethodOptions,
-	})
+	exists, msg, err := p.endpointExists(ctx, "/sap/bc/adt/cts/transports")
 	if err != nil {
-		if strings.Contains(err.Error(), "404") {
-			return false, "CTS endpoint not available", nil
-		}
 		return false, "", err
 	}
-
-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+	if exists {
 		return true, "CTS transport management available", nil
 	}
-
-	return false, "CTS not responding", nil
+	return false, fmt.Sprintf("CTS %s", msg), nil
 }
 
 // FeatureSummary returns a human-readable summary of all features

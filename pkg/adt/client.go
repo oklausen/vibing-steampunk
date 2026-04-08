@@ -916,6 +916,24 @@ func (c *Client) GetSystemInfo(ctx context.Context) (*SystemInfo, error) {
 		info.DatabaseRelease = getString(hanaResult.Rows[0], "RELEASE")
 	}
 
+	// Fallback HANA detection: check DBSTATC table (standard ABAP DDIC table
+	// that stores DB statistics config with DBTYP column set to 'HDB' on HANA)
+	if info.DatabaseSystem == "" {
+		dbResult, err := c.RunQuery(ctx, "SELECT DISTINCT DBTYP FROM DBSTATC WHERE DBTYP = 'HDB'", 1)
+		if err == nil && len(dbResult.Rows) > 0 {
+			info.DatabaseSystem = "HDB"
+		}
+	}
+
+	// Fallback HANA detection: check for HANA-specific ABAP classes in TADIR.
+	// Classes like CL_HDB_* are only delivered on HANA-based systems.
+	if info.DatabaseSystem == "" {
+		hdbResult, err := c.RunQuery(ctx, "SELECT OBJ_NAME FROM TADIR WHERE OBJ_NAME LIKE 'CL_HDB_%' AND OBJECT = 'CLAS' AND PGMID = 'R3TR'", 1)
+		if err == nil && len(hdbResult.Rows) > 0 {
+			info.DatabaseSystem = "HDB"
+		}
+	}
+
 	// If we couldn't get SystemID from T000, use fallback
 	if info.SystemID == "" {
 		info.SystemID = "???"
