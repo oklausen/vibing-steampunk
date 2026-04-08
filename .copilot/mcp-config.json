@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "vibing-steampunk": {
+      "command": "vsp",
+      "args": []
+    }
+  }
+}

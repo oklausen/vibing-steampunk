@@ -72,6 +72,11 @@ func (s *Server) handleGetConnectionInfo(ctx context.Context, request mcp.CallTo
 }
 
 func (s *Server) handleGetFeatures(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	// Clear cache if refresh requested
+	if refresh, _ := request.Params.Arguments["refresh"].(bool); refresh {
+		s.featureProber.ClearCache()
+	}
+
 	// Probe all features
 	results := s.featureProber.ProbeAll(ctx)
 

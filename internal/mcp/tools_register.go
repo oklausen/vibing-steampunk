@@ -301,6 +301,9 @@ func (s *Server) registerSystemTools(shouldRegister func(string) bool) {
 	// Always registered - provides visibility into what's available
 	s.mcpServer.AddTool(mcp.NewTool("GetFeatures",
 		mcp.WithDescription("Probe SAP system for available features. Returns status of optional capabilities like abapGit, RAP/OData, AMDP debugging, UI5/BSP, and CTS transports. Use this to understand what features are available before attempting to use them."),
+		mcp.WithBoolean("refresh",
+			mcp.Description("Clear cached results and re-probe all features. Use after installing new components."),
+		),
 	), s.handleGetFeatures)
 
 	// GetAbapHelp - ABAP Keyword Documentation

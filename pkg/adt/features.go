@@ -118,6 +118,13 @@ func NewFeatureProber(client *Client, config FeatureConfig, verbose bool) *Featu
 	}
 }
 
+// ClearCache removes all cached feature detection results, forcing re-probe on next access
+func (p *FeatureProber) ClearCache() {
+	p.mu.Lock()
+	p.cache = make(map[FeatureID]*FeatureStatus)
+	p.mu.Unlock()
+}
+
 // ProbeAll probes all features and returns their status
 func (p *FeatureProber) ProbeAll(ctx context.Context) map[FeatureID]*FeatureStatus {
 	features := []FeatureID{
@@ -293,6 +300,16 @@ func (p *FeatureProber) probeAbapGit(ctx context.Context) (bool, string, error) 
 
 	if len(results) > 0 {
 		return true, "/UI2/CL_ABAPGIT* found (SAP package)", nil
+	}
+
+	// Check for standalone abapGit program
+	results, err = p.client.SearchObject(ctx, "ZABAPGIT*", 1)
+	if err != nil {
+		return false, "", err
+	}
+
+	if len(results) > 0 {
+		return true, "ZABAPGIT standalone found", nil
 	}
 
 	return false, "abapGit not found", nil
