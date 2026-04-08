@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strconv"
@@ -671,6 +672,12 @@ func parseUnitTestResult(data []byte) (*UnitTestResult, error) {
 	// Handle empty response (no test classes found)
 	if len(data) == 0 {
 		return &UnitTestResult{Classes: []UnitTestClass{}}, nil
+	}
+
+	// Debug: write raw XML to stderr if VSP_DEBUG_XML is set
+	if os.Getenv("VSP_DEBUG_XML") != "" {
+		_ = os.WriteFile("aunit_debug.xml", data, 0644)
+		fmt.Fprintf(os.Stderr, "[DEBUG] Raw ABAP Unit XML saved to aunit_debug.xml (%d bytes)\n", len(data))
 	}
 
 	// Strip namespace prefixes and declarations for consistent parsing

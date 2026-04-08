@@ -957,26 +957,33 @@ func collectObjectBoundariesCLI(ctx context.Context, client *adt.Client, objType
 }
 
 func collectPackageBoundariesCLI(ctx context.Context, client *adt.Client, pkg string) cliHealthSignal {
-	content, err := client.GetPackage(ctx, pkg)
+	// Resolve full package hierarchy
+	scope, err := AcquirePackageScope(ctx, client, pkg, true)
 	if err != nil {
 		return cliHealthSignal{Status: "ERROR", Details: map[string]any{"message": err.Error()}}
 	}
+
+	// Collect objects from all packages in scope
+	objects, err := AcquirePackageObjects(ctx, client, ScopeToWhere(scope))
+	if err != nil {
+		return cliHealthSignal{Status: "ERROR", Details: map[string]any{"message": err.Error()}}
+	}
+
 	g := graph.New()
 	count := 0
-	for _, obj := range content.Objects {
-		objType := strings.ToUpper(obj.Type)
-		if objType != "CLAS" && objType != "PROG" && objType != "INTF" {
+	for _, obj := range objects {
+		if !IsSourceBearing(obj.Type) {
 			continue
 		}
-		if count >= 30 {
+		if count >= 50 {
 			break
 		}
-		source, err := client.GetSource(ctx, objType, obj.Name, nil)
+		source, err := client.GetSource(ctx, obj.Type, obj.Name, nil)
 		if err != nil || source == "" {
 			continue
 		}
-		nodeID := graph.NodeID(objType, obj.Name)
-		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: objType, Package: pkg})
+		nodeID := graph.NodeID(obj.Type, obj.Name)
+		g.AddNode(&graph.Node{ID: nodeID, Name: obj.Name, Type: obj.Type, Package: obj.Package})
 		edges := graph.ExtractDepsFromSource(source, nodeID)
 		dynEdges := graph.ExtractDynamicCalls(source, nodeID)
 		for _, e := range append(edges, dynEdges...) {
@@ -988,13 +995,50 @@ func collectPackageBoundariesCLI(ctx context.Context, client *adt.Client, pkg st
 		}
 		count++
 	}
+
+	// Resolve packages for target nodes
 	resolvePackagesCLI(ctx, client, g)
-	report := g.CheckBoundaries(pkg, &graph.BoundaryOptions{IncludeDynamic: true})
+
+	// Directional crossing analysis
+	report := graph.AnalyzeCrossings(g, scope, nil)
+
 	status := "CLEAN"
-	if report.Violations > 0 {
+	if report.Sibling > 0 || report.Downward > 0 || report.CommonDown > 0 {
 		status = "VIOLATIONS"
 	}
-	return cliHealthSignal{Status: status, Details: map[string]any{"scanned_objects": count, "violations": report.Violations, "crossed_packages": report.CrossedPackages}}
+	if len(report.Circular) > 0 {
+		status = "VIOLATIONS"
+	}
+
+	details := map[string]any{
+		"packages_scanned": report.PackagesScanned,
+		"objects_scanned":  report.ObjectsScanned,
+	}
+	if report.Upward > 0 {
+		details["upward"] = report.Upward
+	}
+	if report.Common > 0 {
+		details["common"] = report.Common
+	}
+	if report.Sibling > 0 {
+		details["sibling"] = report.Sibling
+	}
+	if report.Downward > 0 {
+		details["downward"] = report.Downward
+	}
+	if report.CommonDown > 0 {
+		details["common_down"] = report.CommonDown
+	}
+	if report.External > 0 {
+		details["external"] = report.External
+	}
+	if report.Dynamic > 0 {
+		details["dynamic"] = report.Dynamic
+	}
+	if len(report.Circular) > 0 {
+		details["circular"] = report.Circular
+	}
+	return cliHealthSignal{Status: status, Details: details}
 }
 
 func collectObjectStalenessCLI(ctx context.Context, client *adt.Client, objType, objName string) cliHealthSignal {
