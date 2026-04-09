@@ -547,10 +547,75 @@ func init() {
 	rootCmd.AddCommand(transportCmd)
 	rootCmd.AddCommand(contextCmd)
 	rootCmd.AddCommand(installCmd)
+	rootCmd.AddCommand(whatPackageCmd)
 
 	// Transport subcommands
 	transportCmd.AddCommand(transportListCmd)
 	transportCmd.AddCommand(transportGetCmd)
+}
+
+var whatPackageCmd = &cobra.Command{
+	Use:   "what-package <name> [name...]",
+	Short: "Look up TADIR package assignment for objects",
+	Long: `Query TADIR to find the canonical type and package (DEVCLASS) for one
+or more ABAP objects. Useful for debugging boundary analysis results.
+
+Examples:
+  vsp what-package ZCL_MY_CLASS
+  vsp what-package ZIF_LOGGER ZCX_S ZCL_BLOG
+  vsp what-package ZSCR_117_MIN_ALERT_CREATE_LOC`,
+	Args: cobra.MinimumNArgs(1),
+	RunE: runWhatPackage,
+}
+
+func runWhatPackage(cmd *cobra.Command, args []string) error {
+	params, err := resolveSystemParams(cmd)
+	if err != nil {
+		return err
+	}
+	client, err := getClient(params)
+	if err != nil {
+		return err
+	}
+
+	names := make([]string, len(args))
+	for i, a := range args {
+		names[i] = strings.ToUpper(strings.TrimSpace(a))
+	}
+
+	// Query TADIR for R3TR entries
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = "'" + n + "'"
+	}
+	inClause := strings.Join(quoted, ",")
+
+	query := fmt.Sprintf("SELECT PGMID, OBJECT, OBJ_NAME, DEVCLASS FROM TADIR WHERE OBJ_NAME IN (%s) ORDER BY PGMID, OBJECT", inClause)
+	result, err := client.RunQuery(context.Background(), query, len(names)*5)
+	if err != nil {
+		return fmt.Errorf("TADIR query failed: %v", err)
+	}
+
+	found := make(map[string]bool)
+	if result != nil {
+		for _, row := range result.Rows {
+			pgmid := strings.TrimSpace(fmt.Sprintf("%v", row["PGMID"]))
+			objType := strings.TrimSpace(fmt.Sprintf("%v", row["OBJECT"]))
+			objName := strings.TrimSpace(fmt.Sprintf("%v", row["OBJ_NAME"]))
+			devclass := strings.TrimSpace(fmt.Sprintf("%v", row["DEVCLASS"]))
+			fmt.Printf("%-5s %-4s %-40s → %s\n", pgmid, objType, objName, devclass)
+			found[strings.ToUpper(objName)] = true
+		}
+	}
+
+	// Report not found
+	for _, n := range names {
+		if !found[n] {
+			fmt.Printf("%-5s %-4s %-40s → NOT FOUND\n", "?", "?", n)
+		}
+	}
+
+	return nil
 }
 
 var trBoundariesCmd = &cobra.Command{
@@ -2333,8 +2398,7 @@ func printCLIHealthHTML(result *cliHealthResult, details bool) {
 }
 
 // resolvePackagesCLI queries TADIR to fill in missing package info and correct
-// object types. The parser guesses types (e.g., CLAS for an INTF); TADIR is
-// authoritative for both OBJECT type and DEVCLASS assignment.
+// object types. Two-pass: TADIR for R3TR objects, then TFDIR→TADIR for FMs.
 func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph) {
 	var names []string
 	nodesByName := make(map[string][]*graph.Node)
@@ -2347,7 +2411,28 @@ func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph)
 	if len(names) == 0 {
 		return
 	}
-	// Batch TADIR lookups in chunks of 100 to avoid query size limits
+
+	// Pass 1: TADIR batch lookup
+	resolveTADIRcli(ctx, client, names, nodesByName)
+
+	// Pass 2: TFDIR fallback for unresolved nodes (function modules)
+	var unresolved []string
+	for _, n := range names {
+		if nodes, ok := nodesByName[strings.ToUpper(n)]; ok {
+			for _, node := range nodes {
+				if node.Package == "" {
+					unresolved = append(unresolved, strings.ToUpper(n))
+					break
+				}
+			}
+		}
+	}
+	if len(unresolved) > 0 {
+		resolveFMviaTFDIRcli(ctx, client, unresolved, nodesByName)
+	}
+}
+
+func resolveTADIRcli(ctx context.Context, client *adt.Client, names []string, nodesByName map[string][]*graph.Node) {
 	for start := 0; start < len(names); start += 100 {
 		end := start + 100
 		if end > len(names) {
@@ -2370,10 +2455,69 @@ func resolvePackagesCLI(ctx context.Context, client *adt.Client, g *graph.Graph)
 			if nodes, ok := nodesByName[objName]; ok {
 				for _, n := range nodes {
 					n.Package = devclass
-					// Correct type if TADIR disagrees with parser guess
 					if objType != "" && n.Type != objType {
 						n.Type = objType
 					}
+				}
+			}
+		}
+	}
+}
+
+func resolveFMviaTFDIRcli(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) {
+	quoted := make([]string, len(fmNames))
+	for i, n := range fmNames {
+		quoted[i] = "'" + n + "'"
+	}
+	query := fmt.Sprintf("SELECT FUNCNAME, PNAME FROM TFDIR WHERE FUNCNAME IN (%s)", strings.Join(quoted, ","))
+	result, err := client.RunQuery(ctx, query, len(fmNames)*2)
+	if err != nil || result == nil {
+		return
+	}
+
+	fugrSet := make(map[string]bool)
+	fmToFugr := make(map[string]string)
+	for _, row := range result.Rows {
+		funcName := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["FUNCNAME"])))
+		pname := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["PNAME"])))
+		fugrName := ""
+		if strings.HasPrefix(pname, "SAPL") {
+			fugrName = pname[4:]
+		} else if pname != "" {
+			fugrName = pname
+		}
+		if fugrName != "" {
+			fmToFugr[funcName] = fugrName
+			fugrSet[fugrName] = true
+		}
+	}
+	if len(fugrSet) == 0 {
+		return
+	}
+
+	fugrQuoted := make([]string, 0, len(fugrSet))
+	for fg := range fugrSet {
+		fugrQuoted = append(fugrQuoted, "'"+fg+"'")
+	}
+	fugrQuery := fmt.Sprintf("SELECT obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND object = 'FUGR' AND obj_name IN (%s)", strings.Join(fugrQuoted, ","))
+	fugrResult, err := client.RunQuery(ctx, fugrQuery, len(fugrSet)*2)
+	if err != nil || fugrResult == nil {
+		return
+	}
+
+	fugrPkg := make(map[string]string)
+	for _, row := range fugrResult.Rows {
+		objName := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["OBJ_NAME"])))
+		devclass := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["DEVCLASS"])))
+		fugrPkg[objName] = devclass
+	}
+
+	for fmName, fugrName := range fmToFugr {
+		if devclass, ok := fugrPkg[fugrName]; ok {
+			if nodes, ok := nodesByName[fmName]; ok {
+				for _, n := range nodes {
+					n.Package = devclass
+					n.Type = "FUNC"
 				}
 			}
 		}

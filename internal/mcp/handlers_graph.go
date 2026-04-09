@@ -203,6 +203,11 @@ func (s *Server) handleCheckBoundaries(ctx context.Context, request mcp.CallTool
 // resolvePackages queries TADIR to fill in missing package info and correct
 // object types for nodes. The parser often guesses types (e.g., CLAS for an
 // INTF); TADIR is authoritative for both OBJECT type and DEVCLASS assignment.
+//
+// Two-pass resolution:
+//  1. TADIR: resolves CLAS, INTF, PROG, FUGR, TABL, etc.
+//  2. TFDIR→TADIR: for function modules not in TADIR (LIMU objects),
+//     look up TFDIR.PNAME to find the function group, then TADIR for DEVCLASS.
 func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) {
 	// Collect nodes without packages
 	var names []string
@@ -219,7 +224,28 @@ func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) {
 		return
 	}
 
-	// Batch query TADIR (up to 100 at a time)
+	// Pass 1: TADIR batch lookup
+	resolveTADIR(ctx, s.adtClient, names, nodesByName)
+
+	// Pass 2: TFDIR fallback for nodes still without packages (function modules)
+	var unresolved []string
+	for _, n := range names {
+		if nodes, ok := nodesByName[strings.ToUpper(n)]; ok {
+			for _, node := range nodes {
+				if node.Package == "" {
+					unresolved = append(unresolved, strings.ToUpper(n))
+					break
+				}
+			}
+		}
+	}
+	if len(unresolved) > 0 {
+		resolveFMviaTFDIR(ctx, s.adtClient, unresolved, nodesByName)
+	}
+}
+
+// resolveTADIR batch-queries TADIR for R3TR objects and updates node package/type.
+func resolveTADIR(ctx context.Context, client *adt.Client, names []string, nodesByName map[string][]*graph.Node) {
 	batchSize := 100
 	for i := 0; i < len(names); i += batchSize {
 		end := i + batchSize
@@ -227,22 +253,15 @@ func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) {
 			end = len(names)
 		}
 		batch := names[i:end]
-
-		// Build IN clause
 		quoted := make([]string, len(batch))
 		for j, n := range batch {
 			quoted[j] = "'" + strings.ToUpper(n) + "'"
 		}
-		inClause := strings.Join(quoted, ",")
-
-		query := fmt.Sprintf("SELECT object, obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND obj_name IN (%s)", inClause)
-
-		result, err := s.adtClient.RunQuery(ctx, query, 0)
+		query := fmt.Sprintf("SELECT object, obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND obj_name IN (%s)", strings.Join(quoted, ","))
+		result, err := client.RunQuery(ctx, query, 0)
 		if err != nil {
-			continue // Best effort
+			continue
 		}
-
-		// Parse result and update nodes
 		for _, row := range result.Rows {
 			objType := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["OBJECT"])))
 			objName := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["OBJ_NAME"])))
@@ -250,10 +269,77 @@ func (s *Server) resolvePackages(ctx context.Context, g *graph.Graph) {
 			if nodes, ok := nodesByName[objName]; ok {
 				for _, n := range nodes {
 					n.Package = devclass
-					// Correct type if TADIR disagrees with parser guess
 					if objType != "" && n.Type != objType {
 						n.Type = objType
 					}
+				}
+			}
+		}
+	}
+}
+
+// resolveFMviaTFDIR resolves function modules that aren't in TADIR as R3TR objects.
+// Strategy: TFDIR.FUNCNAME → TFDIR.PNAME (e.g., "SAPLZFUGR") → extract FUGR name
+// → TADIR lookup for the FUGR to get DEVCLASS.
+func resolveFMviaTFDIR(ctx context.Context, client *adt.Client, fmNames []string, nodesByName map[string][]*graph.Node) {
+	quoted := make([]string, len(fmNames))
+	for i, n := range fmNames {
+		quoted[i] = "'" + n + "'"
+	}
+	query := fmt.Sprintf("SELECT FUNCNAME, PNAME FROM TFDIR WHERE FUNCNAME IN (%s)", strings.Join(quoted, ","))
+	result, err := client.RunQuery(ctx, query, len(fmNames)*2)
+	if err != nil || result == nil {
+		return
+	}
+
+	// Collect unique FUGR names to look up in TADIR
+	fugrSet := make(map[string]bool)
+	fmToFugr := make(map[string]string) // FM name → FUGR name
+	for _, row := range result.Rows {
+		funcName := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["FUNCNAME"])))
+		pname := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["PNAME"])))
+		// PNAME is the function pool program: SAPL<fugr_name>
+		fugrName := ""
+		if strings.HasPrefix(pname, "SAPL") {
+			fugrName = pname[4:]
+		} else if pname != "" {
+			fugrName = pname // fallback
+		}
+		if fugrName != "" {
+			fmToFugr[funcName] = fugrName
+			fugrSet[fugrName] = true
+		}
+	}
+
+	if len(fugrSet) == 0 {
+		return
+	}
+
+	// TADIR lookup for the function groups
+	fugrQuoted := make([]string, 0, len(fugrSet))
+	for fg := range fugrSet {
+		fugrQuoted = append(fugrQuoted, "'"+fg+"'")
+	}
+	fugrQuery := fmt.Sprintf("SELECT obj_name, devclass FROM tadir WHERE pgmid = 'R3TR' AND object = 'FUGR' AND obj_name IN (%s)", strings.Join(fugrQuoted, ","))
+	fugrResult, err := client.RunQuery(ctx, fugrQuery, len(fugrSet)*2)
+	if err != nil || fugrResult == nil {
+		return
+	}
+
+	fugrPkg := make(map[string]string) // FUGR name → DEVCLASS
+	for _, row := range fugrResult.Rows {
+		objName := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["OBJ_NAME"])))
+		devclass := strings.ToUpper(strings.TrimSpace(fmt.Sprintf("%v", row["DEVCLASS"])))
+		fugrPkg[objName] = devclass
+	}
+
+	// Update FM nodes: set type to FUNC, package from the FUGR's DEVCLASS
+	for fmName, fugrName := range fmToFugr {
+		if devclass, ok := fugrPkg[fugrName]; ok {
+			if nodes, ok := nodesByName[fmName]; ok {
+				for _, n := range nodes {
+					n.Package = devclass
+					n.Type = "FUNC"
 				}
 			}
 		}
