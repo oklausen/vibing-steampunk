@@ -103,7 +103,8 @@ Write-Ok "SAP node is Ready."
 # Step 4: Wait for SAP pod to be running
 # ============================================================
 Write-Status "Waiting for SAP pod to be Running..."
-while ((Get-Date) -lt $deadline) {
+$podDeadline = (Get-Date).AddMinutes($TimeoutMinutes)
+while ((Get-Date) -lt $podDeadline) {
     $podPhase = kubectl get pods -n $Namespace -l app=sap-a4h -o jsonpath="{.items[0].status.phase}" 2>&1
     if ($podPhase -eq "Running") { break }
     Write-Host "." -NoNewline
@@ -132,7 +133,8 @@ while ((Get-Date) -lt $sapDeadline) {
     $null = kubectl exec -n $Namespace deployment/$Deployment -- su - a4hadm -c "sapcontrol -nr 00 -function GetProcessList" 2>&1
     $sapExitCode = $LASTEXITCODE
 
-    if ($sapExitCode -eq 0) {
+    # Exit code 0 = all GREEN; 3 = all listed processes GREEN (instance quirk)
+    if ($sapExitCode -eq 0 -or $sapExitCode -eq 3) {
         $sapStarted = $true
         break
     }
