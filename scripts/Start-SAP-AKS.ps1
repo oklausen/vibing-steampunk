@@ -39,7 +39,7 @@ param(
     [string]$Deployment = "sap-a4h",
     [string]$Fqdn = "mysapa4haks.swedencentral.cloudapp.azure.com",
     [switch]$SkipSCC,
-    [int]$TimeoutMinutes = 15
+    [int]$TimeoutMinutes = 25
 )
 
 $ErrorActionPreference = "Stop"
