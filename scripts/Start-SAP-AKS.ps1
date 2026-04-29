@@ -184,9 +184,10 @@ if (-not $SkipSCC) {
         Write-Ok "SCC is already running."
     } else {
         Write-Status "Starting SCC daemon..."
-        # Use daemon.sh directly — rcscc_daemon start blocks (wait $pid) via kubectl exec
-        $sccResult = kubectl exec -n $Namespace deployment/$Deployment -- bash -c "cd /opt/sap/scc && ./daemon.sh start" 2>&1
-        Start-Sleep -Seconds 5
+        # Both rcscc_daemon and daemon.sh block under kubectl exec (wait $pid / foreground Java).
+        # Background the process so kubectl exec returns immediately, then verify via port check.
+        $null = kubectl exec -n $Namespace deployment/$Deployment -- bash -c "cd /opt/sap/scc && nohup ./daemon.sh start > /dev/null 2>&1 &" 2>&1
+        Start-Sleep -Seconds 10
 
         $sccVerify = kubectl exec -n $Namespace deployment/$Deployment -- ss -tlnp 2>&1 | Select-String "8443"
         if ($sccVerify) {
