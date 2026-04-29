@@ -186,13 +186,30 @@ if (-not $SkipSCC) {
         Write-Status "Starting SCC daemon..."
         # Both rcscc_daemon and daemon.sh block under kubectl exec (wait $pid / foreground Java).
         # Background the process so kubectl exec returns immediately, then verify via port check.
-        $null = kubectl exec -n $Namespace deployment/$Deployment -- bash -c "cd /opt/sap/scc && nohup ./daemon.sh start > /dev/null 2>&1 &" 2>&1
-        Start-Sleep -Seconds 10
+        # Redirect output to a log file for debugging (not /dev/null).
+        $null = kubectl exec -n $Namespace deployment/$Deployment -- bash -c "cd /opt/sap/scc && nohup ./daemon.sh start > /tmp/scc_start.log 2>&1 &" 2>&1
 
-        $sccVerify = kubectl exec -n $Namespace deployment/$Deployment -- ss -tlnp 2>&1 | Select-String "8443"
-        if ($sccVerify) {
+        # SCC Java process needs time to initialise and bind to port 8443.
+        # Check every 5 seconds for up to 60 seconds.
+        $sccDeadline = (Get-Date).AddSeconds(60)
+        $sccUp = $false
+        while ((Get-Date) -lt $sccDeadline) {
+            Start-Sleep -Seconds 5
+            $sccVerify = kubectl exec -n $Namespace deployment/$Deployment -- ss -tlnp 2>&1 | Select-String "8443"
+            if ($sccVerify) {
+                $sccUp = $true
+                break
+            }
+            Write-Status "  Waiting for SCC to bind port 8443..."
+        }
+
+        if ($sccUp) {
             Write-Ok "SCC started at https://${Fqdn}:8443/"
         } else {
+            # Dump the start log for troubleshooting
+            Write-Warn "SCC did not bind port 8443 within 60 seconds."
+            $sccLog = kubectl exec -n $Namespace deployment/$Deployment -- cat /tmp/scc_start.log 2>&1
+            if ($sccLog) { Write-Host $sccLog }
             Write-Warn "SCC may not have started. Check manually."
         }
     }
