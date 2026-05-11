@@ -12,7 +12,9 @@ import (
 	"github.com/oisee/vibing-steampunk/pkg/adt"
 )
 
-// routeCRUDAction routes "edit" for LOCK/UNLOCK/UPDATE_SOURCE, "create" for OBJECT/DEVC/TABL/CLONE, "delete" for OBJECT.
+// routeCRUDAction routes "edit" for LOCK/UNLOCK/UPDATE_SOURCE/
+// RECOVER_FAILED_CREATE, "create" for OBJECT/DEVC/TABL/CLONE, "delete"
+// for OBJECT.
 func (s *Server) routeCRUDAction(ctx context.Context, action, objectType, objectName string, params map[string]any) (*mcp.CallToolResult, bool, error) {
 	if action == "edit" {
 		switch objectType {
@@ -26,6 +28,8 @@ func (s *Server) routeCRUDAction(ctx context.Context, action, objectType, object
 			return s.callHandler(ctx, s.handleMoveObject, params)
 		case "COMPARE_SOURCE":
 			return s.callHandler(ctx, s.handleCompareSource, params)
+		case "RECOVER_FAILED_CREATE":
+			return s.callHandler(ctx, s.handleRecoverFailedCreate, params)
 		}
 	}
 
@@ -62,13 +66,13 @@ func (s *Server) routeCRUDAction(ctx context.Context, action, objectType, object
 // --- CRUD Handlers ---
 
 func (s *Server) handleLockObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURL, ok := request.Params.Arguments["object_url"].(string)
+	objectURL, ok := request.GetArguments()["object_url"].(string)
 	if !ok || objectURL == "" {
 		return newToolResultError("object_url is required"), nil
 	}
 
 	accessMode := "MODIFY"
-	if am, ok := request.Params.Arguments["access_mode"].(string); ok && am != "" {
+	if am, ok := request.GetArguments()["access_mode"].(string); ok && am != "" {
 		accessMode = am
 	}
 
@@ -82,12 +86,12 @@ func (s *Server) handleLockObject(ctx context.Context, request mcp.CallToolReque
 }
 
 func (s *Server) handleUnlockObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURL, ok := request.Params.Arguments["object_url"].(string)
+	objectURL, ok := request.GetArguments()["object_url"].(string)
 	if !ok || objectURL == "" {
 		return newToolResultError("object_url is required"), nil
 	}
 
-	lockHandle, ok := request.Params.Arguments["lock_handle"].(string)
+	lockHandle, ok := request.GetArguments()["lock_handle"].(string)
 	if !ok || lockHandle == "" {
 		return newToolResultError("lock_handle is required"), nil
 	}
@@ -101,23 +105,23 @@ func (s *Server) handleUnlockObject(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleUpdateSource(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURL, ok := request.Params.Arguments["object_url"].(string)
+	objectURL, ok := request.GetArguments()["object_url"].(string)
 	if !ok || objectURL == "" {
 		return newToolResultError("object_url is required"), nil
 	}
 
-	source, ok := request.Params.Arguments["source"].(string)
+	source, ok := request.GetArguments()["source"].(string)
 	if !ok || source == "" {
 		return newToolResultError("source is required"), nil
 	}
 
-	lockHandle, ok := request.Params.Arguments["lock_handle"].(string)
+	lockHandle, ok := request.GetArguments()["lock_handle"].(string)
 	if !ok || lockHandle == "" {
 		return newToolResultError("lock_handle is required"), nil
 	}
 
 	transport := ""
-	if t, ok := request.Params.Arguments["transport"].(string); ok {
+	if t, ok := request.GetArguments()["transport"].(string); ok {
 		transport = t
 	}
 
@@ -136,47 +140,47 @@ func (s *Server) handleUpdateSource(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleCreateObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectType, ok := request.Params.Arguments["object_type"].(string)
+	objectType, ok := request.GetArguments()["object_type"].(string)
 	if !ok || objectType == "" {
 		return newToolResultError("object_type is required"), nil
 	}
 
-	name, ok := request.Params.Arguments["name"].(string)
+	name, ok := request.GetArguments()["name"].(string)
 	if !ok || name == "" {
 		return newToolResultError("name is required"), nil
 	}
 
-	description, ok := request.Params.Arguments["description"].(string)
+	description, ok := request.GetArguments()["description"].(string)
 	if !ok || description == "" {
 		return newToolResultError("description is required"), nil
 	}
 
-	packageName, ok := request.Params.Arguments["package_name"].(string)
+	packageName, ok := request.GetArguments()["package_name"].(string)
 	if !ok || packageName == "" {
 		return newToolResultError("package_name is required"), nil
 	}
 
 	transport := ""
-	if t, ok := request.Params.Arguments["transport"].(string); ok {
+	if t, ok := request.GetArguments()["transport"].(string); ok {
 		transport = t
 	}
 
 	parentName := ""
-	if p, ok := request.Params.Arguments["parent_name"].(string); ok {
+	if p, ok := request.GetArguments()["parent_name"].(string); ok {
 		parentName = p
 	}
 
 	// RAP-specific options
 	serviceDefinition := ""
-	if sd, ok := request.Params.Arguments["service_definition"].(string); ok {
+	if sd, ok := request.GetArguments()["service_definition"].(string); ok {
 		serviceDefinition = sd
 	}
 	bindingVersion := ""
-	if bv, ok := request.Params.Arguments["binding_version"].(string); ok {
+	if bv, ok := request.GetArguments()["binding_version"].(string); ok {
 		bindingVersion = bv
 	}
 	bindingCategory := ""
-	if bc, ok := request.Params.Arguments["binding_category"].(string); ok {
+	if bc, ok := request.GetArguments()["binding_category"].(string); ok {
 		bindingCategory = bc
 	}
 
@@ -208,30 +212,30 @@ func (s *Server) handleCreateObject(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleCreatePackage(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	name, ok := request.Params.Arguments["name"].(string)
+	name, ok := request.GetArguments()["name"].(string)
 	if !ok || name == "" {
 		return newToolResultError("name is required"), nil
 	}
 
 	name = strings.ToUpper(name)
 
-	description, ok := request.Params.Arguments["description"].(string)
+	description, ok := request.GetArguments()["description"].(string)
 	if !ok || description == "" {
 		return newToolResultError("description is required"), nil
 	}
 
 	parent := ""
-	if p, ok := request.Params.Arguments["parent"].(string); ok && p != "" {
+	if p, ok := request.GetArguments()["parent"].(string); ok && p != "" {
 		parent = strings.ToUpper(p)
 	}
 
 	transport := ""
-	if t, ok := request.Params.Arguments["transport"].(string); ok && t != "" {
+	if t, ok := request.GetArguments()["transport"].(string); ok && t != "" {
 		transport = t
 	}
 
 	softwareComponent := ""
-	if sc, ok := request.Params.Arguments["software_component"].(string); ok && sc != "" {
+	if sc, ok := request.GetArguments()["software_component"].(string); ok && sc != "" {
 		softwareComponent = strings.ToUpper(sc)
 	}
 
@@ -267,17 +271,17 @@ func (s *Server) handleCreatePackage(ctx context.Context, request mcp.CallToolRe
 }
 
 func (s *Server) handleCreateTable(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	name, ok := request.Params.Arguments["name"].(string)
+	name, ok := request.GetArguments()["name"].(string)
 	if !ok || name == "" {
 		return newToolResultError("name is required"), nil
 	}
 
-	description, ok := request.Params.Arguments["description"].(string)
+	description, ok := request.GetArguments()["description"].(string)
 	if !ok || description == "" {
 		return newToolResultError("description is required"), nil
 	}
 
-	fieldsJSON, ok := request.Params.Arguments["fields"].(string)
+	fieldsJSON, ok := request.GetArguments()["fields"].(string)
 	if !ok || fieldsJSON == "" {
 		return newToolResultError("fields is required (JSON array)"), nil
 	}
@@ -294,17 +298,17 @@ func (s *Server) handleCreateTable(ctx context.Context, request mcp.CallToolRequ
 
 	// Optional parameters
 	pkg := "$TMP"
-	if p, ok := request.Params.Arguments["package"].(string); ok && p != "" {
+	if p, ok := request.GetArguments()["package"].(string); ok && p != "" {
 		pkg = strings.ToUpper(p)
 	}
 
 	transport := ""
-	if t, ok := request.Params.Arguments["transport"].(string); ok && t != "" {
+	if t, ok := request.GetArguments()["transport"].(string); ok && t != "" {
 		transport = t
 	}
 
 	deliveryClass := "A"
-	if dc, ok := request.Params.Arguments["delivery_class"].(string); ok && dc != "" {
+	if dc, ok := request.GetArguments()["delivery_class"].(string); ok && dc != "" {
 		deliveryClass = strings.ToUpper(dc)
 	}
 
@@ -334,10 +338,10 @@ func (s *Server) handleCreateTable(ctx context.Context, request mcp.CallToolRequ
 }
 
 func (s *Server) handleCompareSource(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	type1, _ := request.Params.Arguments["type1"].(string)
-	name1, _ := request.Params.Arguments["name1"].(string)
-	type2, _ := request.Params.Arguments["type2"].(string)
-	name2, _ := request.Params.Arguments["name2"].(string)
+	type1, _ := request.GetArguments()["type1"].(string)
+	name1, _ := request.GetArguments()["name1"].(string)
+	type2, _ := request.GetArguments()["type2"].(string)
+	name2, _ := request.GetArguments()["name2"].(string)
 
 	if type1 == "" || name1 == "" || type2 == "" || name2 == "" {
 		return newToolResultError("type1, name1, type2, and name2 are all required"), nil
@@ -345,19 +349,19 @@ func (s *Server) handleCompareSource(ctx context.Context, request mcp.CallToolRe
 
 	// Build options for first object
 	opts1 := &adt.GetSourceOptions{}
-	if inc, ok := request.Params.Arguments["include1"].(string); ok && inc != "" {
+	if inc, ok := request.GetArguments()["include1"].(string); ok && inc != "" {
 		opts1.Include = inc
 	}
-	if parent, ok := request.Params.Arguments["parent1"].(string); ok && parent != "" {
+	if parent, ok := request.GetArguments()["parent1"].(string); ok && parent != "" {
 		opts1.Parent = parent
 	}
 
 	// Build options for second object
 	opts2 := &adt.GetSourceOptions{}
-	if inc, ok := request.Params.Arguments["include2"].(string); ok && inc != "" {
+	if inc, ok := request.GetArguments()["include2"].(string); ok && inc != "" {
 		opts2.Include = inc
 	}
-	if parent, ok := request.Params.Arguments["parent2"].(string); ok && parent != "" {
+	if parent, ok := request.GetArguments()["parent2"].(string); ok && parent != "" {
 		opts2.Parent = parent
 	}
 
@@ -371,10 +375,10 @@ func (s *Server) handleCompareSource(ctx context.Context, request mcp.CallToolRe
 }
 
 func (s *Server) handleCloneObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectType, _ := request.Params.Arguments["object_type"].(string)
-	sourceName, _ := request.Params.Arguments["source_name"].(string)
-	targetName, _ := request.Params.Arguments["target_name"].(string)
-	pkg, _ := request.Params.Arguments["package"].(string)
+	objectType, _ := request.GetArguments()["object_type"].(string)
+	sourceName, _ := request.GetArguments()["source_name"].(string)
+	targetName, _ := request.GetArguments()["target_name"].(string)
+	pkg, _ := request.GetArguments()["package"].(string)
 
 	if objectType == "" || sourceName == "" || targetName == "" || pkg == "" {
 		return newToolResultError("object_type, source_name, target_name, and package are all required"), nil
@@ -390,7 +394,7 @@ func (s *Server) handleCloneObject(ctx context.Context, request mcp.CallToolRequ
 }
 
 func (s *Server) handleGetClassInfo(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	className, _ := request.Params.Arguments["class_name"].(string)
+	className, _ := request.GetArguments()["class_name"].(string)
 	if className == "" {
 		return newToolResultError("class_name is required"), nil
 	}
@@ -404,19 +408,117 @@ func (s *Server) handleGetClassInfo(ctx context.Context, request mcp.CallToolReq
 	return mcp.NewToolResultText(string(output)), nil
 }
 
+// handleRecoverFailedCreate is the MCP-facing recovery primitive for a
+// zombie object that a previous CreateObject attempt left behind
+// (e.g. after a 5xx where SAP persisted the skeleton before the HTTP
+// response failed). The caller does NOT need a lock handle from the
+// original session — the handler itself probes existence, acquires a
+// fresh lock, and drives DeleteObject. See pkg/adt.RecoverFailedCreate
+// and the partial-create RCA for the full story.
+//
+// Inputs (all required except transport / parent_name):
+//
+//	object_type   — CLAS / PROG / INTF / FUGR / DDLS / ...
+//	name          — object name
+//	package_name  — for the safety gate; must be in allowed list
+//	parent_name   — required for FUNC (parent function group)
+//	transport     — optional TR the zombie was attached to
+//
+// The output is a structured JSON document describing what was tried:
+//
+//	{
+//	  "status": "cleaned" | "already_clean" | "partial" | "probe_failed",
+//	  "object_url": "...",
+//	  "package": "...",
+//	  "transport": "...",
+//	  "cleanup_actions": ["..."],
+//	  "manual_steps":    ["..."]
+//	}
+//
+// Manual steps are only populated when the cleanup could not finish
+// — typically because another user holds a lock or because DeleteObject
+// itself failed. The operator can copy those directly into SAPGUI.
+func (s *Server) handleRecoverFailedCreate(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+	objectType, ok := request.GetArguments()["object_type"].(string)
+	if !ok || objectType == "" {
+		return newToolResultError("object_type is required"), nil
+	}
+	name, ok := request.GetArguments()["name"].(string)
+	if !ok || name == "" {
+		return newToolResultError("name is required"), nil
+	}
+	packageName, ok := request.GetArguments()["package_name"].(string)
+	if !ok || packageName == "" {
+		return newToolResultError("package_name is required"), nil
+	}
+	parentName := ""
+	if p, ok := request.GetArguments()["parent_name"].(string); ok {
+		parentName = p
+	}
+	transport := ""
+	if t, ok := request.GetArguments()["transport"].(string); ok {
+		transport = t
+	}
+
+	opts := adt.CreateObjectOptions{
+		ObjectType:  adt.CreatableObjectType(objectType),
+		Name:        name,
+		PackageName: packageName,
+		ParentName:  parentName,
+		Transport:   transport,
+	}
+
+	pce := s.adtClient.RecoverFailedCreate(ctx, opts)
+
+	// Classify the outcome for the UI layer. The four cases correspond
+	// to the four shapes RecoverFailedCreate returns:
+	//
+	//   cleaned        → probe found the object, cleanup succeeded
+	//   already_clean  → probe found nothing, idempotent no-op
+	//   partial        → probe found the object, cleanup could not finish
+	//   probe_failed   → could not even determine whether the object exists
+	status := "partial"
+	switch {
+	case pce.CleanupOK && len(pce.CleanupActions) == 1 &&
+		strings.Contains(pce.CleanupActions[0], "nothing to recover"):
+		status = "already_clean"
+	case pce.CleanupOK:
+		status = "cleaned"
+	case pce.OriginalErr != nil && strings.Contains(pce.OriginalErr.Error(), "existence probe failed"):
+		status = "probe_failed"
+	}
+
+	result := map[string]any{
+		"status":          status,
+		"object_url":      pce.ObjectURL,
+		"package":         pce.Package,
+		"transport":       pce.Transport,
+		"cleanup_actions": pce.CleanupActions,
+	}
+	if len(pce.ManualSteps) > 0 {
+		result["manual_steps"] = pce.ManualSteps
+	}
+	if pce.OriginalErr != nil {
+		result["last_error"] = pce.OriginalErr.Error()
+	}
+
+	output, _ := json.MarshalIndent(result, "", "  ")
+	return mcp.NewToolResultText(string(output)), nil
+}
+
 func (s *Server) handleDeleteObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURL, ok := request.Params.Arguments["object_url"].(string)
+	objectURL, ok := request.GetArguments()["object_url"].(string)
 	if !ok || objectURL == "" {
 		return newToolResultError("object_url is required"), nil
 	}
 
-	lockHandle, ok := request.Params.Arguments["lock_handle"].(string)
+	lockHandle, ok := request.GetArguments()["lock_handle"].(string)
 	if !ok || lockHandle == "" {
 		return newToolResultError("lock_handle is required"), nil
 	}
 
 	transport := ""
-	if t, ok := request.Params.Arguments["transport"].(string); ok {
+	if t, ok := request.GetArguments()["transport"].(string); ok {
 		transport = t
 	}
 
@@ -429,17 +531,17 @@ func (s *Server) handleDeleteObject(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleMoveObject(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectType, ok := request.Params.Arguments["object_type"].(string)
+	objectType, ok := request.GetArguments()["object_type"].(string)
 	if !ok || objectType == "" {
 		return newToolResultError("object_type is required"), nil
 	}
 
-	objectName, ok := request.Params.Arguments["object_name"].(string)
+	objectName, ok := request.GetArguments()["object_name"].(string)
 	if !ok || objectName == "" {
 		return newToolResultError("object_name is required"), nil
 	}
 
-	newPackage, ok := request.Params.Arguments["new_package"].(string)
+	newPackage, ok := request.GetArguments()["new_package"].(string)
 	if !ok || newPackage == "" {
 		return newToolResultError("new_package is required"), nil
 	}

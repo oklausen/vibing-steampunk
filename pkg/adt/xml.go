@@ -29,6 +29,7 @@ type Link struct {
 	Rel     string   `xml:"rel,attr"`
 	Type    string   `xml:"type,attr,omitempty"`
 	Title   string   `xml:"title,attr,omitempty"`
+	Name    string   `xml:"http://www.sap.com/adt/core name,attr,omitempty"` // adtcore:name attribute
 }
 
 // AtomEntry represents an Atom feed entry.
@@ -128,13 +129,14 @@ type PackageObject struct {
 }
 
 // FunctionGroup represents a function group structure.
+// Root element is <group:abapFunctionGroup> in ADT v2/v3 responses (local name "abapFunctionGroup").
 type FunctionGroup struct {
-	XMLName   xml.Name `xml:"group"`
-	URI       string   `xml:"uri,attr"`
-	Type      string   `xml:"type,attr"`
-	Name      string   `xml:"name,attr"`
-	Version   string   `xml:"version,attr,omitempty"`
-	Links     []Link   `xml:"link"`
+	XMLName   xml.Name         `xml:"abapFunctionGroup"`
+	URI       string           `xml:"uri,attr"`
+	Type      string           `xml:"type,attr"`
+	Name      string           `xml:"name,attr"`
+	Version   string           `xml:"version,attr,omitempty"`
+	Links     []Link           `xml:"link"`
 	Functions []FunctionModule `xml:"functionModule,omitempty"`
 }
 
@@ -324,4 +326,115 @@ func ExtractSourceLink(links []Link) string {
 		}
 	}
 	return ""
+}
+
+// --- API Release State Types (Clean Core / ABAP Cloud) ---
+
+// APIReleaseState represents the release state of an ABAP object for Clean Core compatibility.
+// This is used to check if an object is released for use in ABAP Cloud / S/4HANA Cloud.
+
+type APIReleaseState struct {
+	Object  *APIReleaseStateObj     `xml:"releasableObject" json:"releasableObject,omitempty"`
+	C0      *APIReleaseStateRelease `xml:"c0Release" json:"c0,omitempty"`
+	C1      *APIReleaseStateRelease `xml:"c1Release" json:"c1,omitempty"`
+	C2      *APIReleaseStateRelease `xml:"c2Release" json:"c2,omitempty"`
+	C3      *APIReleaseStateRelease `xml:"c3Release" json:"c3,omitempty"`
+	C4      *APIReleaseStateRelease `xml:"c4Release" json:"c4,omitempty"`
+	Catalog APIReleaseStateCatalog  `xml:"apiCatalogData" json:"apiCatalogData"`
+}
+
+type APIReleaseStateObj struct {
+	URI  string `xml:"uri,attr" json:"uri,omitempty"`
+	Type string `xml:"type,attr" json:"type,omitempty"`
+	Name string `xml:"name,attr" json:"name,omitempty"`
+}
+
+type APIReleaseStateRelease struct {
+	Contract              string                  `xml:"contract,attr" json:"contract,omitempty"`
+	UseInKeyUserApps      bool                    `xml:"useInKeyUserApps,attr" json:"useInKeyUserApps"`
+	UseInSAPCloudPlatform bool                    `xml:"useInSAPCloudPlatform,attr" json:"useInSAPCloudPlatform"`
+	Name                  string                  `xml:"name,attr" json:"name,omitempty"`
+	ChangedAt             string                  `xml:"changedAt,attr" json:"changedAt,omitempty"`
+	ChangedBy             string                  `xml:"changedBy,attr" json:"changedBy,omitempty"`
+	Status                APIReleaseStateStatus   `xml:"status" json:"status"`
+	UseConceptAsSuccessor bool                    `xml:"useConceptAsSuccessor" json:"useConceptAsSuccessor"`
+	Successors            []APIReleaseStateObj    `xml:"successors>successor" json:"successors,omitempty"`
+	SuccessorConceptName  string                  `xml:"successorConceptName" json:"successorConceptName,omitempty"`
+	StateTransitions      []APIReleaseStateStatus `xml:"stateTransitions>status" json:"stateTransitions,omitempty"`
+}
+
+type APIReleaseStateStatus struct {
+	State            string `xml:"state,attr" json:"state,omitempty"`
+	StateDescription string `xml:"stateDescription,attr" json:"stateDescription,omitempty"`
+}
+
+type APIReleaseStateCatalog struct {
+	IsAnyAssignmentPossible bool `xml:"isAnyAssignmentPossible,attr" json:"isAnyAssignmentPossible"`
+	IsAnyContractReleased   bool `xml:"isAnyContractReleased,attr" json:"isAnyContractReleased"`
+}
+
+// --- Revision (Version History) Types ---
+
+// Revision represents a single version of an ABAP object in the revision history.
+type Revision struct {
+	URI          string `json:"uri"`                    // Content URL for fetching this version's source
+	Version      string `json:"version"`                // Version identifier (entry ID)
+	VersionTitle string `json:"versionTitle"`           // Human-readable version title
+	Date         string `json:"date"`                   // ISO 8601 timestamp
+	Author       string `json:"author"`                 // Username who made the change
+	Transport    string `json:"transport,omitempty"`     // Transport request number
+}
+
+// revisionFeedEntry is an internal type for parsing ADT version Atom feed entries.
+type revisionFeedEntry struct {
+	XMLName xml.Name `xml:"entry"`
+	ID      string   `xml:"id"`
+	Title   string   `xml:"title"`
+	Updated string   `xml:"updated"`
+	Author  struct {
+		Name string `xml:"name"`
+	} `xml:"author"`
+	Content struct {
+		Src  string `xml:"src,attr"`
+		Type string `xml:"type,attr"`
+	} `xml:"content"`
+	Links []Link `xml:"link"`
+}
+
+// revisionFeed is an internal type for parsing ADT version Atom feeds.
+type revisionFeed struct {
+	XMLName xml.Name            `xml:"feed"`
+	Title   string              `xml:"title"`
+	Entries []revisionFeedEntry `xml:"entry"`
+}
+
+// ParseRevisionFeed parses an ADT versions Atom feed into Revision entries.
+func ParseRevisionFeed(data []byte) ([]Revision, error) {
+	var feed revisionFeed
+	if err := xml.Unmarshal(data, &feed); err != nil {
+		return nil, fmt.Errorf("parsing revision feed: %w", err)
+	}
+
+	revisions := make([]Revision, 0, len(feed.Entries))
+	for _, entry := range feed.Entries {
+		rev := Revision{
+			URI:          entry.Content.Src,
+			VersionTitle: entry.Title,
+			Date:         entry.Updated,
+			Version:      entry.ID,
+			Author:       entry.Author.Name,
+		}
+		// Extract transport request from links (adtcore:name attribute)
+		for _, link := range entry.Links {
+			if strings.Contains(link.Type, "transportrequests") {
+				if link.Name != "" {
+					rev.Transport = link.Name
+				}
+				break
+			}
+		}
+		revisions = append(revisions, rev)
+	}
+
+	return revisions, nil
 }

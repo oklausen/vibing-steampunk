@@ -11,19 +11,95 @@
 
 ![Vibing ABAP Developer](./media/vibing-steampunk.png)
 
-## 100 Stars!
+## Hot Right Now
 
-Read the milestone article: **[Agentic ABAP at 100 Stars: The Numbers, The Community, and What's Cooking](articles/2026-02-18-100-stars-celebration.md)**
+### Package Analysis Suite
 
-## What's New — Token Efficiency Sprint
+Five analysis commands that answer real questions about your ABAP packages:
 
-> **Sprint goal:** make every token count. Built-in ABAP understanding, compressed dependency context, and a single-tool mode that opens the door for local/small models.
+```bash
+vsp health --package '$ZDEV'                    # tests + ATC + boundaries + staleness
+vsp health --package '$ZDEV' --report html      # full HTML report with details
+vsp slim '$ZDEV' --level methods                # dead code detection (method-level)
+vsp api-surface '$ZDEV' --include-subpackages   # Clean Core: which standard APIs do you use?
+vsp boundaries '$ZDEV'                          # directional boundary crossing analysis
+vsp boundaries '$ZDEV' --format mermaid         # visual graph with package subgraphs
+```
+
+### Transport & Change History
+
+```bash
+vsp changelog '$ZDEV' --since 20260101          # what changed in this package?
+vsp changes '$ZDEV' --attribute SAPTEST         # group transports by CR attribute (E070A)
+```
+
+### Directional Boundary Crossings
+
+Not just "crossed" or "not crossed" — **which direction** the dependency flows:
+
+| Direction | Meaning | Verdict |
+|-----------|---------|---------|
+| UPWARD | child → parent | OK |
+| COMMON | anything → _00 package | OK |
+| SIBLING | module → module | BAD — extract to common |
+| DOWNWARD | parent → child | BAD — inverts hierarchy |
+| EXTERNAL | cross-hierarchy | WARN — isolation violation |
+| CIRCULAR | A→B + B→A siblings | BAD — coupled modules |
+
+Export to 7 formats: `text`, `json`, `md`, `mermaid`, `html`, `dot` (Graphviz), `plantuml`, `graphml` (Gephi/yEd).
+
+### Side Effect & LUW Analysis
+
+The parser detects transactional patterns in ABAP source:
+
+| What | Detected |
+|------|----------|
+| DB read/write | SELECT, INSERT, UPDATE, DELETE, MODIFY |
+| LUW ownership | COMMIT WORK, ROLLBACK WORK |
+| Deferred execution | IN UPDATE TASK, IN BACKGROUND TASK |
+| Async | STARTING NEW TASK (aRFC), SUBMIT VIA JOB |
+| External calls | RFC DESTINATION, HTTP client, APC/WebSocket |
+| Transactions | CALL TRANSACTION, LEAVE TO TRANSACTION |
+| Transformations | CALL TRANSFORMATION |
+
+LUW classification: **safe** / **participant** / **owner** / **unsafe**.
+
+### Health Reports
+
+Full health reports with test details, ATC findings, and boundary crossings:
+
+```bash
+vsp health --package '$ZDEV' --details          # text with all details
+vsp health --package '$ZDEV' --report md        # → _ZDEV.md
+vsp health --package '$ZDEV' --report html      # → _ZDEV.html
+vsp health --package '$ZDEV' --report my.html   # → my.html
+```
+
+Tests discover embedded local test classes across the full package hierarchy — the same as Eclipse Ctrl+Shift+F10.
+
+### More
+
+- `vsp graph co-change CLAS ZCL_FOO` for transport-based co-change analysis
+- `vsp graph where-used-config ZKEKEKE` for heuristic TVARVC usage discovery
+- `.vsp.json` `transport_attribute` for per-system CR correlation config
+- **[Analysis & Refactoring Guide](docs/analysis-refactoring-guide.md)** for what these commands do
+- **[Graph Guide](docs/graph-guide.md)** for examples, data sources, and current limits
+
+## 0x101 Stars!
+
+Read the latest article: **[VSP IS ONLY 5% EXPLORED](articles/2026-04-07-vsp-only-5-percent-explored.md)** — 257 stars, 147 tools, compilers, graph analysis, and why 95% of the surface is still unexplored.
+
+Previous: **[Agentic ABAP at 100 Stars](articles/2026-02-18-100-stars-celebration.md)**
+
+## What's New — Analysis & Intelligence Sprint
+
+> **Sprint goal:** move from CRUD tool to ABAP intelligence platform. Package-level analysis, directional boundary crossings, side effect detection, transport correlation.
 
 The full version history is in [CHANGELOG.md](CHANGELOG.md).
 
-### Hyperfocused Mode — 1 Tool to Rule Them All
+### Hyperfocused Mode — 1 Tool to Rule Them All (Recommended)
 
-Single `SAP(action, target, params)` tool replaces up to 122 individual tool definitions.
+**Recommended for most setups.** Single `SAP(action, target, params)` tool replaces up to 147 individual tool definitions. Minimal token overhead, maximum capability.
 
 ```
 SAP(action="read",   target="CLAS ZCL_TRAVEL")
@@ -32,7 +108,7 @@ SAP(action="create", target="DEVC", params={"name": "$ZOZIK", "description": "Ne
 SAP(action="help",   target="debug")
 ```
 
-| Metric | Focused (81 tools) | Expert (122 tools) | Hyperfocused (1 tool) |
+| Metric | Focused (100 tools) | Expert (147 tools) | Hyperfocused (1 tool) |
 |--------|-------------------:|-------------------:|----------------------:|
 | MCP schema tokens | ~14,000 | ~40,000 | **~200** |
 | Reduction | — | — | **99.5%** |
@@ -113,15 +189,33 @@ The AI only sends/receives the method block (~30 lines). vsp fetches the full cl
 
 > *Built-in ABAP parser based on [abaplint](https://github.com/abaplint/abaplint) by [Lars Hvam](https://github.com/larshp) — the same parser that powers abaplint's 392 ABAP statement types.*
 
+### Native Go ABAP Lexer — abaplint in Go
+
+The [abaplint](https://github.com/abaplint/abaplint) lexer has been mechanically ported from TypeScript to native Go (`pkg/abaplint`). This is the same lexer that powers abaplint — 48 token types, all 6 lexer modes (normal, string, backtick, template, comment, pragma), with full whitespace-context encoding.
+
+**Verified via oracle-based differential testing** against the real TypeScript abaplint:
+
+```
+=== DIFFERENTIAL KPI ===
+Files:   29/29 passed (100.0%)
+Tokens:  22,612 total
+  Full match:  22,612 (100.0%)  — str + type + row + col
+  Str match:   22,612 (100.0%)
+  Type match:  22,612 (100.0%)
+  Pos match:   22,612 (100.0%)
+```
+
+Zero dependencies, zero FFI. Pure Go, ~3.5M tokens/sec, ready for lint rules in Phase 2.
+
 ### ABAP LSP — Real-Time Diagnostics
 
 `vsp lsp --stdio` gives Claude Code (and other editors) **automatic** error detection and navigation for ABAP files. No explicit tool calls — the LSP pushes diagnostics on every save and compressed dependency context on file open.
 
 See [LSP setup](#abap-lsp-for-claude-code) for configuration.
 
-### WASM-to-ABAP Compiler — Run Any Language on SAP
+### WASM-to-ABAP Compiler (Research)
 
-Compile WebAssembly binaries to native ABAP. Three paths, one goal:
+Compile WebAssembly binaries to native ABAP — advanced prototype, verified on selected corpora. Three paths:
 
 ```
 .wasm binary → pkg/wasmcomp (Go)  → ABAP source files     ← AOT compiler
@@ -129,7 +223,7 @@ Compile WebAssembly binaries to native ABAP. Three paths, one goal:
 .wasm binary → zcl_wasm_compiler  → ABAP (on SAP itself!)  ← self-hosting, 785 lines
 ```
 
-**Proven on SAP A4H:** QuickJS (1,410 functions) compiled to 101K lines ABAP. abaplint parser (26.5MB) compiled to 396K lines. Self-hosting compiler parses WASM, generates ABAP, and executes via `GENERATE SUBROUTINE POOL` — all within SAP.
+**Demonstrated on SAP A4H:** QuickJS (1,410 functions) compiled to 101K lines ABAP. abaplint parser (26.5MB) compiled to 396K lines. Self-hosting compiler parses WASM, generates ABAP, and executes via `GENERATE SUBROUTINE POOL` — all within SAP. This is research/prototype work, not a production-ready toolchain.
 
 | What | Size | Status |
 |------|:----:|:------:|
@@ -141,58 +235,174 @@ Compile WebAssembly binaries to native ABAP. Three paths, one goal:
 
 > *Branch: `feat/wasm-abap`. See [reports/2026-03-20-001](reports/2026-03-20-001-wasm-abap-achievement.md) for full details.*
 
+### Full CLI Toolchain — SAP from the Terminal
+
+35+ commands. No SAP GUI, no Eclipse, no IDE. Most work with standard ADT; `lint`/`parse`/`compile` work fully offline.
+
+```bash
+# Package analysis
+vsp health --package '$ZDEV'                     # tests + ATC + boundaries + staleness
+vsp health --package '$ZDEV' --report html       # full HTML report
+vsp slim '$ZDEV' --level methods                 # dead code detection
+vsp api-surface '$ZDEV' --include-subpackages    # Clean Core API inventory
+vsp boundaries '$ZDEV' --format mermaid          # boundary crossings (visual)
+vsp boundaries '$ZDEV' --report dot              # Graphviz export
+vsp changelog '$ZDEV' --since 20260101           # transport history
+vsp changes '$ZDEV' --attribute SAPTEST          # CR-level grouping
+
+# Graph & dependencies
+vsp graph CLAS ZCL_FOO --direction callers       # who uses this class?
+vsp graph co-change CLAS ZCL_FOO                 # transport-based co-change
+vsp graph where-used-config ZKEKEKE              # TVARVC readers (heuristic)
+
+# Source & editing
+vsp source CLAS ZCL_MY_CLASS                     # read source
+vsp source CLAS ZCL_MY_CLASS --method GET_DATA   # read single method
+vsp context CLAS ZCL_FOO --depth 2               # source + dependency contracts
+vsp analyze ZCL_MY_CLASS                         # 13 lint rules (offline)
+
+# Tables & search
+vsp query T000 --top 5                           # query any table
+vsp search "ZCL_*" --type CLAS --max 50          # object search
+vsp grep "SELECT.*mara" --package '$TMP'         # source code search
+
+# Testing & quality
+vsp test --package '$ZDEV'                       # run unit tests
+vsp atc CLAS ZCL_MY_CLASS                        # ATC code check
+
+# Deployment & tooling
+vsp deploy zcl_test.clas.abap '$TMP'             # deploy file to SAP
+vsp export '$ZORK' '$ZLLM' -o packages.zip       # export abapGit ZIP
+vsp install abapgit                              # install abapGit on SAP
+vsp install zadt-vsp                             # install ZADT_VSP handler
+
+# Offline tools
+vsp lint --file myclass.clas.abap                # offline ABAP linter
+vsp parse --stdin --format json < source.abap    # ABAP parser
+vsp compile wasm program.wasm --class ZCL_DEMO   # WASM→ABAP compiler
+```
+
+See **[CLI Guide](docs/cli-guide.md)** for the complete reference with feature requirements matrix.
+
 ### Other Highlights
-- **CLI DevOps Surface**: Full ABAP DevOps from the terminal — `vsp source read/write/edit/context`, `vsp test`, `vsp atc`, `vsp deploy`, `vsp transport list/get`, `vsp install zadt-vsp/abapgit`. Pipe source code, script CI/CD pipelines, bootstrap SAP systems without MCP.
+- **Lua Scripting Engine**: `vsp lua` — interactive REPL + scripts with 50+ SAP bindings. Query tables, lint code, parse ABAP, debug with breakpoints, record execution, replay state. See [example scripts](examples/scripts/).
+- **YAML Workflows**: `vsp workflow run pipeline.yaml` — CI/CD automation with variable substitution, step chaining, and error handling. See [example workflows](examples/workflows/).
 - **Bootstrap from CLI**: `vsp install abapgit` + `vsp install zadt-vsp` — deploy dependencies to SAP systems directly from the command line. No SAP GUI needed.
-- **Codebase Decomposition**: `server.go` (2,539→256 lines), `workflows.go` (3,564→402 lines) split into domain-specific files. Easier to contribute, review, and maintain.
 
 ## Key Features
 
 | Feature | Description |
 |---------|-------------|
-| **Hyperfocused Mode** | `--mode hyperfocused`: 1 universal SAP tool, **~200 tokens** vs ~40K for 122 |
+| **Package Health** | `vsp health` — tests, ATC, boundary crossings, staleness in one report (text/md/html) |
+| **Dead Code Detection** | `vsp slim` — method-level dead/internal/live classification via WBCROSSGT reverse refs |
+| **Boundary Analysis** | `vsp boundaries` — directional crossings (UPWARD/SIBLING/DOWNWARD/EXTERNAL/CIRCULAR) |
+| **Side Effect Detection** | DB read/write, COMMIT/ROLLBACK, UPDATE TASK, RFC, async — LUW classification |
+| **Transport History** | `vsp changelog` + `vsp changes` — transport correlation and CR-level grouping |
+| **API Surface** | `vsp api-surface` — Clean Core inventory: which standard APIs does your code use? |
+| **Graph Export** | 7 formats: mermaid, HTML, DOT (Graphviz), PlantUML, GraphML (Gephi), JSON, MD |
+| **Static Analysis** | `vsp analyze` — 13 lint rules in pure Go, no external dependencies |
+| **Hyperfocused Mode** | 1 universal SAP tool, **~200 tokens** vs ~40K for 147 tools |
 | **Context Compression** | Auto-compressed dependency contracts — 7–30x compression, built-in ABAP parser |
+| **Method-Level Surgery** | Read/edit individual methods — 95% token reduction vs full-class round-trips |
 | **ABAP LSP** | Built-in Language Server — real-time diagnostics, go-to-definition, context push |
 | **AI Debugger** | Breakpoints, listener, attach, step, inspect stack & variables |
 | **RAP OData E2E** | Create CDS views, Service Definitions, Bindings → Publish OData services |
-| **Focused Mode** | 81 curated tools optimized for AI assistants |
 | **AI-Powered RCA** | Root cause analysis with dumps, traces, profiler + code intelligence |
 | **DSL & Workflows** | Fluent Go API + YAML automation for CI/CD pipelines |
-| **ExecuteABAP** | Run arbitrary ABAP code via unit test wrapper |
-| **Code Analysis** | Call graphs, object structure, find definition/references |
-| **System Introspection** | System info, installed components, CDS dependencies |
-| **Diagnostics** | Short dumps (RABAX), ABAP profiler (ATRA), SQL traces (ST05) |
-| **File Deployment** | Bypass token limits - deploy large files directly from filesystem |
+| **File Deployment** | Bypass token limits — deploy large files directly from filesystem |
 | **Surgical Edits** | `EditSource` tool matches Claude's Edit pattern for precise changes |
 
 ## Quick Start
 
 ```bash
-# Download from releases
+#Download binary from releases
 curl -LO https://github.com/oisee/vibing-steampunk/releases/latest/download/vsp-linux-amd64
 chmod +x vsp-linux-amd64
 
-# Or build from source
+#Or build from source
 git clone https://github.com/oisee/vibing-steampunk.git && cd vibing-steampunk
 make build
 ```
+### Windows 11 with VS Code + Claude Code extension:
+#### 1. Get the latest vsp release:
+https://github.com/oisee/vibing-steampunk/releases.
+
+If you have trouble downloading executable files in your browser, use `curl -o url` or `wget` to download the file. Name the file `vsp.exe`.
+
+Put the file in a local folder and open the folder in VS Code.
+
+Add the vsp folder to your `PATH` environment variable for your user. Either through command line or Windows Registry Editor `regedit`. Add the vsp folder to `KEY_CURRENT_USER\Environment\Path`.
+
+Restart your VS Code to recognize the updated `PATH` before progressing to the next steps.
+
+#### 2. Initialize the config files:
+Open a terminal in VS Code, then run `./vsp config init` to create config template files:
+-	`.env.example`
+-	`.vsp.json.example`
+-	`.mcp.json.example`
+
+#### 3. Adjust your config files:
+ Make sure you delete the comment lines. Refer to the example files in this `README`.
+
+#### 4. Set up authentication
+
+**For basic auth:** Set up a password for your user to allow for basic authentication. Go to `SU01 > Logon Data`, generate an initial password. Then log in again (without SNC/SSO in SAPGUI) and change the initial password. You are now set up for basic authentication via config file in vsp. Set your environment variables `SAP_USER` and `SAP_PASSWORD` accordingly.
+
+You now need to obtain the SAP hostname for your `SAP_URL` environment variable: Log in to any web-based application (e.g. Fiori Launchpad) and obtain the URL from your browser. Attention: `SAP_URL` is not **not** your message/group server from SAP Logon!
+
+**Alternatively use cookie authentication:**
+If you cannot set a password for your user, you may still use cookie authentication to access your SAP system from vsp. 
+
+Extract cookies manually and save them in `cookies.txt` in your vsp folder. Use cookies `SAP_SESSIONID_SYS_CLI` and `sap-usercontext` on your previously determined URL (caution: use `https://` prefix for secure connections). Refer to below guide on how to manually extract cookies from your browser.
+
+**Template cookie file:**
+```
+# Netscape HTTP Cookie File
+# https://curl.haxx.se/rfc/cookie_spec.html
+
+https://your.domain.com	FALSE	/	TRUE	0	SAP_SESSIONID_SYS_CLI  YOUR_CONTENT
+https://your.domain.com	FALSE	/	TRUE	0	sap-usercontext        YOUR_CONTENT
+```
+Replace the hostname, `SYS` with your system ID (e.g. DS1) and `CLI` with your client number (e.g. 100).
+
+**For BTP/Cloud based systems**: Use cookies `__VCAP_ID__` and `JSESSIONID` on your domain `https://xyz.ondemand.com`. This also works for BTP trial accounts. Also refer to <a href="https://medium.com/@warren_eiserman/vibe-steam-punk-vsp-for-abap-cloud-mac-claude-2864d601978f">this article</a>.
+
+**Obtaining cookies from your browser session:**
+
+The easiest way to do so is to use Edge as it allows you to display cookie contents from its settings page. From there you can copy & paste them into the newly created `cookies.txt` file.
+
+Open any transaction in WebDynpro or Fiori Launchpad. For older environments like ECC it should work with BRF+ transactions that open in a browser. Login with your credentials. Once logged in it’s a matter of extracting the created session cookies.
+
+In Edge, go to `Settings > Privacy, search and services > Cookies > See all cookies and site data`. Search for your top-level domain. There should be two cookies for your system as described above (`SAP_SESSIONID` and `sap-usercontext` or `VCAP_ID` and `JSESSIONID` if your system is cloud-based). Copy the content values for each cookie to your local file and save.
+
+The created cookies are session cookies. They will eventually expire after a timeout and the values in cookies.txt need to be updated. Usually Claude will tell you if this is the case.
+
+#### 5. Test the connection: 
+Use the terminal with this command: `./vsp -s dev search "zcl_*" --type CLAS --max 50`.
+
+You will get prompted with a list of found objects if the connection could be established. 
+
 
 ## CLI Coding Agents
 
 VSP works with **8 CLI coding agents** — not just Claude! Full setup guides with config templates:
 
-| Agent | LLM | Free? | Config |
-|-------|-----|-------|--------|
-| **Gemini CLI** | Gemini 2.5 Pro/Flash | Yes (1000 req/day) | `.gemini/settings.json` |
-| **Claude Code** | Claude Opus/Sonnet 4.6 | No ($20+/mo) | `.mcp.json` |
-| **GitHub Copilot** | Claude, GPT-5, Gemini | No ($10+/mo) | `.copilot/mcp-config.json` |
-| **OpenAI Codex** | GPT-5-Codex, GPT-4.1 | No ($20+/mo) | `.mcp.json` |
-| **Qwen Code** | Qwen3-Coder | Yes (1000 req/day) | `.qwen/settings.json` |
-| **OpenCode** | 75+ models (BYOK) | Yes (own key) | `opencode.json` |
-| **Goose** | 75+ providers (BYOK) | Yes (own key) | `~/.config/goose/config.yaml` |
-| **Mistral Vibe** | Devstral 2, local models | Yes (Ollama) | `.vibe/config.toml` |
+| Agent | Model Access | Availability | Config |
+|-------|--------------|--------------|--------|
+| **Gemini CLI** | Gemini models | Free tier available; paid/API-backed usage also available | `.gemini/settings.json` |
+| **Claude Code** | Claude models | Paid usage or subscription-backed access | `.mcp.json` |
+| **GitHub Copilot** | Multi-model (plan-dependent) | Free tier available; paid plans unlock more limits/models | `.copilot/mcp-config.json` |
+| **OpenAI Codex** | OpenAI coding models / ChatGPT-linked access | Limited or plan-dependent access; API usage also available | `codex.toml` |
+| **Qwen Code** | Qwen models | Free tier available; BYOK/API-backed usage also available | `.qwen/settings.json` |
+| **OpenCode** | Multi-provider BYOK | Depends on your provider/account | `opencode.json` |
+| **Goose** | Multi-provider BYOK | Depends on your provider/account | `~/.config/goose/config.yaml` |
+| **Mistral Vibe** | Mistral API or local models | Local/Ollama path can be free; API usage is provider-billed | `.vibe/config.toml` |
+
+Availability, pricing, and model lineups change quickly. Check the linked agent guides and official product docs before copying limits or plan claims into downstream docs.
 
 **[Full setup guide with config examples](docs/cli-agents/README.md)** | [Русский](docs/cli-agents/README_RU.md) | [Українська](docs/cli-agents/README_UA.md) | [Español](docs/cli-agents/README_ES.md)
+
+For the new graph analysis capabilities, see **[Graph Guide](docs/graph-guide.md)**.
 
 ## CLI Mode
 
@@ -214,6 +424,13 @@ vsp -s a4h context CLAS ZCL_FOO                   # shortcut for above
 # Search
 vsp -s a4h search "ZCL_*"
 vsp -s dev search "Z*ORDER*" --type CLAS --max 50
+
+# Graph analysis
+vsp -s a4h graph CLAS ZCL_FOO                      # call graph
+vsp -s a4h graph co-change CLAS ZCL_FOO           # transport-based co-change
+vsp -s a4h graph co-change PROG ZREPORT --format json
+vsp -s a4h graph where-used-config ZKEKEKE        # TVARVC readers (heuristic)
+vsp -s a4h graph where-used-config ZKEKEKE --format mermaid > config.mmd
 
 # Testing & code quality
 vsp -s a4h test CLAS ZCL_MY_CLASS                 # run unit tests
@@ -241,6 +458,14 @@ vsp config init                                   # create example configs
 # Start ABAP LSP server (for Claude Code / editors)
 vsp lsp --stdio
 ```
+
+Graph-MVP highlights:
+
+- `vsp graph co-change <type> <name>` for transport-based co-change analysis
+- `vsp graph where-used-config <variable>` for heuristic TVARVC usage analysis
+- `SAP(action="analyze", params={"type":"co_change", ...})` for MCP co-change
+- `SAP(action="analyze", params={"type":"impact", ...})` for reverse dependency impact
+- `SAP(action="analyze", params={"type":"where_used_config", ...})` for MCP TVARVC usage
 
 ### System Profiles (`.vsp.json`)
 
@@ -289,7 +514,7 @@ Configure multiple SAP systems in `.vsp.json`:
 ```bash
 vsp --url https://host:44300 --user admin --password secret
 vsp --url https://host:44300 --cookie-file cookies.txt
-vsp --mode expert          # Enable all 122 tools
+vsp --mode expert          # Enable all 147 tools
 vsp --mode hyperfocused    # Single SAP tool (~200 tokens instead of ~40K)
 ```
 
@@ -315,7 +540,7 @@ SAP_PASSWORD=secret
 | `--user` | `SAP_USER` | Username |
 | `--password` | `SAP_PASSWORD` | Password |
 | `--client` | `SAP_CLIENT` | Client (default: 001) |
-| `--mode` | `SAP_MODE` | `focused` (default) or `expert` |
+| `--mode` | `SAP_MODE` | `hyperfocused` (recommended), `focused`, or `expert` |
 | `--cookie-file` | `SAP_COOKIE_FILE` | Netscape cookie file |
 | `--insecure` | `SAP_INSECURE` | Skip TLS verification |
 | `--terminal-id` | `SAP_TERMINAL_ID` | SAP GUI terminal ID for cross-tool debugging |
@@ -459,26 +684,26 @@ One axis, three values — `--mode` or `SAP_MODE`:
 
 ```mermaid
 graph LR
-    F["focused<br/>81 tools<br/>~14K tokens<br/><i>default</i>"] --> E["expert<br/>122 tools<br/>~40K tokens"]
-    E --> H["hyperfocused<br/>1 tool<br/>~200 tokens"]
-    style H fill:#2d6a4f,color:#fff
+    F["focused<br/>100 tools<br/>~14K tokens"] --> E["expert<br/>147 tools<br/>~40K tokens"]
+    E --> H["hyperfocused<br/>1 tool<br/>~200 tokens<br/><i>recommended</i>"]
+    style H fill:#2d6a4f,color:#fff,stroke:#4ade80,stroke-width:2px
     style F fill:#264653,color:#fff
     style E fill:#264653,color:#fff
 ```
 
-| Aspect | Focused (default) | Expert | Hyperfocused |
+| Aspect | Focused | Expert | Hyperfocused (recommended) |
 |--------|:-:|:-:|:-:|
-| **Tools** | 81 essential | 122 complete | 1 universal `SAP()` |
-| **Schema tokens** | ~14K | ~40K | ~200 |
+| **Tools** | 100 essential | 147 complete | 1 universal `SAP()` |
+| **Schema tokens** | ~14K | ~40K | **~200** |
 | **How AI calls it** | `GetSource(type, name)` | Same, + granular tools | `SAP(action, target, params)` |
 | **Documentation** | In tool schemas | In tool schemas | `SAP(action="help")` |
-| **Best for** | Large-context agents | Edge cases, debugging | Local models, fast iteration |
+| **Best for** | Legacy setups | Edge cases, debugging | **Most setups — any model, minimal overhead** |
 | **Safety controls** | All apply | All apply | All apply (same code path) |
 
 ```bash
-vsp --mode focused       # default — 81 curated tools
-vsp --mode expert        # all 122 tools individually
-vsp --mode hyperfocused  # single SAP(action, target, params) tool
+vsp --mode hyperfocused  # recommended — single SAP(action, target, params) tool
+vsp --mode focused       # 100 curated tools (individual tool names)
+vsp --mode expert        # all 147 tools individually
 ```
 
 ## DSL & Automation
@@ -694,7 +919,7 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 
 ## Tools Reference
 
-**52 Focused Mode Tools:**
+**Focused Mode Tools (100):**
 - **Search:** SearchObject, GrepObjects, GrepPackages
 - **Read:** GetSource, GetTable, GetTableContents, RunQuery, GetPackage, GetFunctionGroup, GetCDSDependencies
 - **Debugger:** DebuggerListen, DebuggerAttach, DebuggerDetach, DebuggerStep, DebuggerGetStack, DebuggerGetVariables
@@ -708,7 +933,7 @@ See [AI-Powered RCA Workflows](reports/2025-12-05-013-ai-powered-rca-workflows.m
 - **Reports:** RunReport, GetVariants, GetTextElements, SetTextElements
 - **Install:** InstallZADTVSP, InstallAbapGit, ListDependencies
 
-See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (122 tools).
+See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (147 tools).
 
 <details>
 <summary><strong>Capability Matrix</strong></summary>
@@ -746,7 +971,7 @@ See [README_TOOLS.md](README_TOOLS.md) for complete tool documentation (122 tool
 
 **vsp** is a Go rewrite with:
 - Single binary, zero dependencies
-- 62 tools (vs 13 original)
+- 147 tools (vs 13 original)
 - ~50x faster startup
 
 ## Optional: WebSocket Handler (ZADT_VSP)
@@ -813,8 +1038,8 @@ make build          # Current platform
 make build-all      # All 9 platforms
 
 # Test
-go test ./...                              # Unit tests (249)
-go test -tags=integration -v ./pkg/adt/    # Integration tests (21+)
+go test ./...                              # Unit tests (821)
+go test -tags=integration -v ./pkg/adt/    # Integration tests (34+)
 ```
 
 <details>
@@ -830,7 +1055,7 @@ vibing-steampunk/
 │   ├── codeintel.go          # Definition, refs, completion
 │   ├── workflows.go          # High-level workflows
 │   └── http.go               # HTTP transport (CSRF, auth)
-├── internal/mcp/server.go    # MCP tool handlers (62 tools)
+├── internal/mcp/server.go    # MCP tool handlers (147 tools)
 ├── internal/lsp/             # ABAP LSP server (diagnostics, go-to-def)
 └── pkg/dsl/                  # DSL & workflow engine
 ```
@@ -841,8 +1066,8 @@ vibing-steampunk/
 
 | Metric | Value |
 |--------|-------|
-| **Tools** | 122 (81 focused, 122 expert) |
-| **Unit Tests** | 270+ |
+| **Tools** | 147 (100 focused, 147 expert) |
+| **Unit Tests** | 821 |
 | **Platforms** | 9 (Linux, macOS, Windows × amd64/arm64/386) |
 
 <details>
@@ -876,14 +1101,21 @@ vibing-steampunk/
 - [x] **abapGit Export** - WebSocket integration complete (v2.16.0) - GitTypes, GitExport tools ([Report](reports/2025-12-23-002-abapgit-websocket-integration-complete.md))
 - [ ] **abapGit Import** - Requires `ZCL_ABAPGIT_OBJECTS=>deserialize` with virtual repository
 
+### Completed (v2.36.0)
+- [x] API Release State (ARS) - `GetAPIReleaseState` tool for Clean Core compliance checks
+- [x] gCTS Integration - 10 tools for gCTS repository management
+- [x] i18n Tools - 7 tools for translation management with per-request language override
+- [x] Browser SSO - `--browser-auth` for Kerberos/SAML/Keycloak authentication
+- [x] HTTP Streamable Transport - `--transport http` for non-stdio deployments
+- [x] mcp-go v0.47.0 - Latest MCP SDK
+
 ### Planned
-- [ ] API Release State (ARS) - Contract stability checks
 - [ ] Message Server Logs
 - [ ] Background Job Management
 
 ### Future Considerations
 - [ ] AMDP Session Persistence (enable full HANA debugging)
-- [ ] Graph Traversal & Analysis (code dependency graphs)
+- [ ] **Graph Engine & Boundary Analysis** - initial implementation in `pkg/graph/` (boundary analysis, dynamic call detection, 11 tests); SQL/ADT adapters pending
 - [ ] Test Intelligence (smart test execution based on changes)
 - [ ] Standard API Surface Scraper
 

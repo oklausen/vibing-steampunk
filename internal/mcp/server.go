@@ -84,8 +84,25 @@ type Config struct {
 	FeatureUI5       string // UI5/Fiori BSP management
 	FeatureTransport string // CTS transport management (distinct from EnableTransports safety)
 
+	// Graph / co-change configuration
+	TransportAttribute string // E070A attribute name for CR-level co-change aggregation
+
 	// Debugger configuration
 	TerminalID string // SAP GUI terminal ID for cross-tool breakpoint sharing
+
+	// ReauthFunc is called on 401 to re-authenticate (e.g., re-run SAML dance).
+	// Returns fresh cookies. Passed through to adt.Config.
+	ReauthFunc func(ctx context.Context) (map[string]string, error)
+
+	// Session keep-alive interval (0 = disabled)
+	// Sends periodic pings to prevent session timeout during idle periods.
+	// Useful for cookie/browser-auth where sessions expire server-side.
+	KeepAliveInterval time.Duration
+
+	// Transport mode: "stdio" (default) or "http"
+	Transport string
+	// HTTP address for Streamable HTTP transport (default: ":8080")
+	HTTPAddr string
 
 	// Granular tool visibility (from .vsp.json)
 	// Key: tool name, Value: true=enabled, false=disabled
@@ -108,6 +125,9 @@ func NewServer(cfg *Config) *Server {
 	}
 	if cfg.Verbose {
 		opts = append(opts, adt.WithVerbose())
+	}
+	if cfg.ReauthFunc != nil {
+		opts = append(opts, adt.WithReauthFunc(cfg.ReauthFunc))
 	}
 
 	// Configure safety settings
@@ -183,6 +203,11 @@ func NewServer(cfg *Config) *Server {
 	// Register tools based on mode, disabled groups, and granular tool config
 	s.registerTools(cfg.Mode, cfg.DisabledGroups, cfg.ToolsConfig)
 
+	// Start session keep-alive if configured
+	if cfg.KeepAliveInterval > 0 {
+		adtClient.StartKeepAlive(cfg.KeepAliveInterval, cfg.Verbose)
+	}
+
 	return s
 }
 
@@ -201,6 +226,17 @@ func parseFeatureMode(s string) adt.FeatureMode {
 // ServeStdio starts the MCP server on stdin/stdout.
 func (s *Server) ServeStdio() error {
 	return server.ServeStdio(s.mcpServer)
+}
+
+// ServeHTTP starts the MCP server as a Streamable HTTP endpoint.
+func (s *Server) ServeHTTP(addr string) error {
+	httpServer := server.NewStreamableHTTPServer(s.mcpServer)
+	return httpServer.Start(addr)
+}
+
+// GetMCPServer returns the underlying MCP server (for custom transport setup).
+func (s *Server) GetMCPServer() *server.MCPServer {
+	return s.mcpServer
 }
 
 // newToolResultError creates an error result for tool execution failures.

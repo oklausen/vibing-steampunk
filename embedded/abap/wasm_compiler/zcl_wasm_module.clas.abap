@@ -89,6 +89,7 @@ CLASS zcl_wasm_module DEFINITION PUBLIC FINAL CREATE PUBLIC.
     DATA ms_memory    TYPE ty_memory.
     DATA mv_num_imported_funcs TYPE i.
     DATA mv_start_func TYPE i VALUE -1.
+    DATA mv_parse_error TYPE string.
 
     " Parse WASM binary
     METHODS parse IMPORTING iv_wasm TYPE xstring.
@@ -118,25 +119,34 @@ CLASS zcl_wasm_module IMPLEMENTATION.
     " Version
     DATA(lv_version) = mo_reader->read_u32_fixed( ).
     " Sections
+    DATA lv_parse_err TYPE string.
     WHILE mo_reader->eof( ) = abap_false.
-      DATA(lv_section_id) = mo_reader->read_byte( ).
-      DATA(lv_section_len) = mo_reader->read_u32( ).
-      DATA(lv_section_end) = mo_reader->get_pos( ) + lv_section_len.
-      CASE lv_section_id.
-        WHEN 1. parse_type_section( lv_section_end ).
-        WHEN 2. parse_import_section( lv_section_end ).
-        WHEN 3. parse_function_section( lv_section_end ).
-        WHEN 5. parse_memory_section( lv_section_end ).
-        WHEN 6. parse_global_section( lv_section_end ).
-        WHEN 7. parse_export_section( lv_section_end ).
-        WHEN 8. mv_start_func = mo_reader->read_u32( ).
-        WHEN 9. parse_element_section( lv_section_end ).
-        WHEN 10. parse_code_section( lv_section_end ).
-        WHEN 11. parse_data_section( lv_section_end ).
-        WHEN OTHERS. mo_reader->set_pos( lv_section_end ).
-      ENDCASE.
-      IF mo_reader->get_pos( ) <> lv_section_end. mo_reader->set_pos( lv_section_end ). ENDIF.
+      TRY.
+          DATA(lv_section_id) = mo_reader->read_byte( ).
+          DATA(lv_section_len) = mo_reader->read_u32( ).
+          DATA(lv_section_end) = mo_reader->get_pos( ) + lv_section_len.
+          CASE lv_section_id.
+            WHEN 1. parse_type_section( lv_section_end ).
+            WHEN 2. parse_import_section( lv_section_end ).
+            WHEN 3. parse_function_section( lv_section_end ).
+            WHEN 5. parse_memory_section( lv_section_end ).
+            WHEN 6. parse_global_section( lv_section_end ).
+            WHEN 7. parse_export_section( lv_section_end ).
+            WHEN 8. mv_start_func = mo_reader->read_u32( ).
+            WHEN 9. parse_element_section( lv_section_end ).
+            WHEN 10. parse_code_section( lv_section_end ).
+            WHEN 11. parse_data_section( lv_section_end ).
+            WHEN OTHERS. mo_reader->set_pos( lv_section_end ).
+          ENDCASE.
+          IF mo_reader->get_pos( ) <> lv_section_end. mo_reader->set_pos( lv_section_end ). ENDIF.
+        CATCH cx_root INTO DATA(lx_sec).
+          lv_parse_err = |SECTION { lv_section_id } FAILED pos={ mo_reader->get_pos( ) }/{ mo_reader->remaining( ) }: { lx_sec->get_text( ) }|.
+          EXIT. " break WHILE, continue with what we have
+      ENDTRY.
     ENDWHILE.
+    IF lv_parse_err IS NOT INITIAL.
+      mv_parse_error = lv_parse_err.
+    ENDIF.
     " Assign export names
     LOOP AT mt_exports INTO DATA(ls_exp) WHERE kind = 0.
       DATA(lv_fi) = ls_exp-index - mv_num_imported_funcs.
@@ -171,7 +181,7 @@ CLASS zcl_wasm_module IMPLEMENTATION.
       CASE ls_imp-kind.
         WHEN 0. ls_imp-type_index = mo_reader->read_u32( ). ls_imp-func_index = mv_num_imported_funcs. mv_num_imported_funcs = mv_num_imported_funcs + 1.
         WHEN 1. mo_reader->read_byte( ). mo_reader->read_u32( ). DATA(lv_has_max) = mo_reader->read_byte( ). IF lv_has_max = 1. mo_reader->read_u32( ). ENDIF.
-        WHEN 2. DATA(lv_hm2) = mo_reader->read_byte( ). mo_reader->read_u32( ). IF lv_hm2 = 1. mo_reader->read_u32( ). ENDIF.
+        WHEN 2. DATA(lv_hm2) = mo_reader->read_byte( ). ms_memory-min_pages = mo_reader->read_u32( ). IF lv_hm2 = 1. ms_memory-max_pages = mo_reader->read_u32( ). ENDIF.
         WHEN 3. mo_reader->read_byte( ). mo_reader->read_byte( ).
       ENDCASE.
       APPEND ls_imp TO mt_imports.
@@ -243,16 +253,22 @@ CLASS zcl_wasm_module IMPLEMENTATION.
       IF lv_idx > lines( mt_functions ). EXIT. ENDIF.
       DATA(lv_body_size) = mo_reader->read_u32( ).
       DATA(lv_body_end) = mo_reader->get_pos( ) + lv_body_size.
-      " Locals
-      DATA(lv_local_decl_count) = mo_reader->read_u32( ).
-      FIELD-SYMBOLS <func> TYPE ty_function.
-      READ TABLE mt_functions INDEX lv_idx ASSIGNING <func>.
-      DO lv_local_decl_count TIMES.
-        DATA(lv_lc) = mo_reader->read_u32( ). DATA(lv_lt) = mo_reader->read_byte( ).
-        DO lv_lc TIMES. APPEND VALUE ty_valtype( type = lv_lt ) TO <func>-locals. ENDDO.
-      ENDDO.
-      " Instructions
-      <func>-code = parse_instructions( lv_body_end ).
+      TRY.
+          " Locals
+          DATA(lv_local_decl_count) = mo_reader->read_u32( ).
+          FIELD-SYMBOLS <func> TYPE ty_function.
+          READ TABLE mt_functions INDEX lv_idx ASSIGNING <func>.
+          DO lv_local_decl_count TIMES.
+            DATA(lv_lc) = mo_reader->read_u32( ). DATA(lv_lt) = mo_reader->read_byte( ).
+            DO lv_lc TIMES. APPEND VALUE ty_valtype( type = lv_lt ) TO <func>-locals. ENDDO.
+          ENDDO.
+          " Instructions
+          <func>-code = parse_instructions( lv_body_end ).
+        CATCH cx_root INTO DATA(lx_parse).
+          IF mv_parse_error IS INITIAL.
+            mv_parse_error = |func { lv_idx }: { lx_parse->get_text( ) } at pos { mo_reader->get_pos( ) }|.
+          ENDIF.
+      ENDTRY.
       mo_reader->set_pos( lv_body_end ).
     ENDDO.
   ENDMETHOD.
@@ -283,8 +299,15 @@ CLASS zcl_wasm_module IMPLEMENTATION.
       CASE ls_i-op.
         WHEN 2 OR 3 OR 4. ls_i-block_type = mo_reader->read_i32( ). " block/loop/if
         WHEN 12 OR 13. ls_i-label_idx = mo_reader->read_u32( ). " br/br_if
-        WHEN 16. ls_i-func_idx = mo_reader->read_u32( ). " call
-        WHEN 17. ls_i-type_idx = mo_reader->read_u32( ). mo_reader->read_u32( ). " call_indirect
+        WHEN 14. " br_table
+          DATA(lv_bt_cnt) = mo_reader->read_u32( ).
+          DO lv_bt_cnt TIMES. mo_reader->read_u32( ). ENDDO.
+          ls_i-label_idx = mo_reader->read_u32( ). " default
+        WHEN 16 OR 18. ls_i-func_idx = mo_reader->read_u32( ). " call / return_call
+        WHEN 17 OR 19. ls_i-type_idx = mo_reader->read_u32( ). mo_reader->read_u32( ). " call_indirect / return_call_indirect
+        WHEN 28. " select_t
+          DATA(lv_st_cnt) = mo_reader->read_u32( ).
+          DO lv_st_cnt TIMES. mo_reader->read_byte( ). ENDDO.
         WHEN 32 OR 33 OR 34. ls_i-local_idx = mo_reader->read_u32( ). " local.get/set/tee
         WHEN 35 OR 36. ls_i-global_idx = mo_reader->read_u32( ). " global.get/set
         WHEN 40 OR 41 OR 42 OR 43 OR 44 OR 45 OR 46 OR 47 OR 48 OR 49 OR 50 OR 51 OR 52 OR 53 OR 54 OR 55 OR 56 OR 57 OR 58 OR 59 OR 60 OR 61 OR 62.
@@ -292,17 +315,38 @@ CLASS zcl_wasm_module IMPLEMENTATION.
         WHEN 63 OR 64. mo_reader->read_byte( ). " memory.size/grow
         WHEN 65. ls_i-i32_value = mo_reader->read_i32( ). " i32.const
         WHEN 66. ls_i-i64_value = mo_reader->read_i64( ). " i64.const
-        WHEN 67. mo_reader->read_bytes( 4 ). " f32.const (skip 4 bytes)
-        WHEN 68. mo_reader->read_bytes( 8 ). " f64.const (skip 8 bytes)
+        WHEN 67. mo_reader->read_bytes( 4 ). " f32.const
+        WHEN 68. mo_reader->read_bytes( 8 ). " f64.const
         WHEN 252. " 0xFC misc prefix
           ls_i-misc_op = mo_reader->read_u32( ).
-          IF ls_i-misc_op = 10. mo_reader->read_byte( ). mo_reader->read_byte( ). ENDIF. " memory.copy
-          IF ls_i-misc_op = 11. mo_reader->read_byte( ). ENDIF. " memory.fill
+          CASE ls_i-misc_op.
+            WHEN 0 OR 1 OR 2 OR 3 OR 4 OR 5 OR 6 OR 7. " trunc_sat — no extra operands
+            WHEN 8. mo_reader->read_u32( ). mo_reader->read_byte( ). " memory.init
+            WHEN 9. mo_reader->read_u32( ). " data.drop
+            WHEN 10. mo_reader->read_byte( ). mo_reader->read_byte( ). " memory.copy
+            WHEN 11. mo_reader->read_byte( ). " memory.fill
+            WHEN 12. mo_reader->read_u32( ). mo_reader->read_byte( ). " table.init
+            WHEN 13. mo_reader->read_u32( ). " elem.drop
+            WHEN 14. mo_reader->read_u32( ). mo_reader->read_u32( ). " table.copy
+            WHEN 15 OR 16 OR 17. mo_reader->read_u32( ). " table.grow/size/fill
+          ENDCASE.
+        WHEN 208. mo_reader->read_byte( ). " ref.null (type)
+        WHEN 210. mo_reader->read_u32( ). " ref.func (func_idx)
         WHEN 253. " 0xFD SIMD prefix — skip
           DATA(lv_simd_op) = mo_reader->read_u32( ).
-          IF lv_simd_op <= 11. mo_reader->read_u32( ). mo_reader->read_u32( ). ENDIF. " SIMD memarg
+          IF lv_simd_op <= 11. mo_reader->read_u32( ). mo_reader->read_u32( ). ENDIF.
           IF lv_simd_op = 12. mo_reader->read_bytes( 16 ). ENDIF. " v128.const
           IF lv_simd_op = 13. mo_reader->read_bytes( 16 ). ENDIF. " shuffle
+        WHEN OTHERS.
+          " Opcodes 0-1, 5, 11, 15, 26-27, 69-192, 209: no operands — safe to skip
+          " If an unknown opcode WITH operands appears, parsing will desync
+          IF ls_i-op > 192 AND ls_i-op < 208.
+            " Unknown prefix range — abort this function
+            IF mv_parse_error IS INITIAL.
+              mv_parse_error = |unknown opcode { ls_i-op } at pos { mo_reader->get_pos( ) }|.
+            ENDIF.
+            RETURN.
+          ENDIF.
       ENDCASE.
       APPEND ls_i TO rt.
     ENDWHILE.
@@ -320,5 +364,8 @@ CLASS zcl_wasm_module IMPLEMENTATION.
     DATA(lv_total_instrs) = 0.
     LOOP AT mt_functions INTO DATA(ls_f). lv_total_instrs = lv_total_instrs + lines( ls_f-code ). ENDLOOP.
     rv = rv && |, Instructions: { lv_total_instrs }|.
+    IF mv_parse_error IS NOT INITIAL.
+      rv = rv && |, ERROR: { mv_parse_error }|.
+    ENDIF.
   ENDMETHOD.
 ENDCLASS.

@@ -2,9 +2,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/oisee/vibing-steampunk/internal/mcp"
@@ -68,7 +70,18 @@ Configuration files:
 Configuration priority: CLI flags > env vars > .env file > defaults
 Ready-to-use configs for 8 AI agents: docs/cli-agents/`,
 	Version: fmt.Sprintf("%s (commit: %s, built: %s)", Version, Commit, BuildDate),
-	RunE:    runServer,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		// Also check SAP_VERBOSE env var (viper reads it, but resolveConfig
+		// is only called for the MCP server mode, so we check it here too)
+		if !cfg.Verbose {
+			cfg.Verbose = viper.GetBool("VERBOSE")
+		}
+		if cfg.Verbose {
+			adt.SetLogOutput(os.Stderr)
+		}
+		return nil
+	},
+	RunE: runServer,
 }
 
 func init() {
@@ -93,6 +106,22 @@ func init() {
 	rootCmd.Flags().String("cookie-file", "", "Path to cookie file in Netscape format")
 	rootCmd.Flags().String("cookie-string", "", "Cookie string (key1=val1; key2=val2)")
 
+	// Browser-based SSO authentication
+	rootCmd.Flags().Bool("browser-auth", false, "Open browser for SSO login (Kerberos, SAML, Keycloak)")
+	rootCmd.Flags().Duration("browser-auth-timeout", 120*time.Second, "Timeout for browser-based SSO login")
+	rootCmd.Flags().String("browser-exec", "", "Path to Chromium-based browser (default: auto-detect Edge, Chrome, Chromium)")
+	rootCmd.Flags().String("cookie-save", "", "Save browser auth cookies to file for reuse with --cookie-file")
+
+	// Programmatic SAML SSO authentication (no browser required)
+	rootCmd.Flags().Bool("saml-auth", false, "Authenticate via programmatic SAML SSO (no browser, no MFA)")
+	rootCmd.Flags().String("saml-user", "", "SAML/IAS username (email)")
+	rootCmd.Flags().String("saml-password", "", "SAML/IAS password")
+	rootCmd.Flags().String("credential-cmd", "", "External command returning JSON {\"username\":...,\"password\":...} (space-separated argv, no shell quoting — use a wrapper script for paths with spaces)")
+
+
+	// Session keep-alive
+	rootCmd.Flags().Duration("keepalive", 5*time.Minute, "Session keep-alive interval (e.g., 60s, 5m). Prevents session timeout during idle periods. 0 = disabled")
+
 	// Safety options
 	rootCmd.Flags().BoolVar(&cfg.ReadOnly, "read-only", false, "Block all write operations (create, update, delete, activate)")
 	rootCmd.Flags().BoolVar(&cfg.BlockFreeSQL, "block-free-sql", false, "Block execution of arbitrary SQL queries via RunQuery")
@@ -105,8 +134,12 @@ func init() {
 	rootCmd.Flags().BoolVar(&cfg.AllowTransportableEdits, "allow-transportable-edits", false, "Allow editing objects in transportable packages (requires transport parameter)")
 
 	// Mode options
-	rootCmd.Flags().StringVar(&cfg.Mode, "mode", "focused", "Tool mode: focused (81 tools), expert (122 tools), or hyperfocused (single universal SAP tool)")
-	rootCmd.Flags().StringVar(&cfg.DisabledGroups, "disabled-groups", "", "Disable tool groups: 5/U=UI5, T=Tests, H=HANA, D=Debug (e.g., \"TH\" disables Tests and HANA)")
+	rootCmd.Flags().StringVar(&cfg.Mode, "mode", "hyperfocused", "Tool mode: hyperfocused (single universal SAP tool), focused (100 tools), or expert (147 tools)")
+	rootCmd.Flags().StringVar(&cfg.DisabledGroups, "disabled-groups", "", "Disable tool groups: 5/U=UI5, T=Tests, H=HANA, D=Debug, GC=gCTS, N=i18n")
+
+	// Transport options
+	rootCmd.Flags().StringVar(&cfg.Transport, "transport", "stdio", "Transport mode: stdio (default) or http")
+	rootCmd.Flags().StringVar(&cfg.HTTPAddr, "http-addr", ":8080", "HTTP listen address for Streamable HTTP transport")
 
 	// Feature configuration (safety network)
 	// Values: "auto" (default), "on", "off"
@@ -121,7 +154,7 @@ func init() {
 	rootCmd.Flags().StringVar(&cfg.TerminalID, "terminal-id", "", "SAP GUI terminal ID for cross-tool breakpoint sharing")
 
 	// Output options
-	rootCmd.Flags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose output to stderr")
+	rootCmd.PersistentFlags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose output to stderr")
 
 	// Bind flags to viper for environment variable support
 	viper.BindPFlag("url", rootCmd.Flags().Lookup("url"))
@@ -132,6 +165,15 @@ func init() {
 	viper.BindPFlag("insecure", rootCmd.Flags().Lookup("insecure"))
 	viper.BindPFlag("cookie-file", rootCmd.Flags().Lookup("cookie-file"))
 	viper.BindPFlag("cookie-string", rootCmd.Flags().Lookup("cookie-string"))
+	viper.BindPFlag("browser-auth", rootCmd.Flags().Lookup("browser-auth"))
+	viper.BindPFlag("browser-auth-timeout", rootCmd.Flags().Lookup("browser-auth-timeout"))
+	viper.BindPFlag("saml-auth", rootCmd.Flags().Lookup("saml-auth"))
+	viper.BindPFlag("saml-user", rootCmd.Flags().Lookup("saml-user"))
+	viper.BindPFlag("saml-password", rootCmd.Flags().Lookup("saml-password"))
+	viper.BindPFlag("credential-cmd", rootCmd.Flags().Lookup("credential-cmd"))
+	viper.BindPFlag("browser-exec", rootCmd.Flags().Lookup("browser-exec"))
+	viper.BindPFlag("cookie-save", rootCmd.Flags().Lookup("cookie-save"))
+	viper.BindPFlag("keepalive", rootCmd.Flags().Lookup("keepalive"))
 	viper.BindPFlag("read-only", rootCmd.Flags().Lookup("read-only"))
 	viper.BindPFlag("block-free-sql", rootCmd.Flags().Lookup("block-free-sql"))
 	viper.BindPFlag("allowed-ops", rootCmd.Flags().Lookup("allowed-ops"))
@@ -143,7 +185,7 @@ func init() {
 	viper.BindPFlag("allow-transportable-edits", rootCmd.Flags().Lookup("allow-transportable-edits"))
 	viper.BindPFlag("mode", rootCmd.Flags().Lookup("mode"))
 	viper.BindPFlag("disabled-groups", rootCmd.Flags().Lookup("disabled-groups"))
-	viper.BindPFlag("verbose", rootCmd.Flags().Lookup("verbose"))
+	viper.BindPFlag("verbose", rootCmd.PersistentFlags().Lookup("verbose"))
 
 	// Feature configuration
 	viper.BindPFlag("feature-hana", rootCmd.Flags().Lookup("feature-hana"))
@@ -171,14 +213,19 @@ func runServer(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	// Process cookie authentication
-	if err := processCookieAuth(cmd); err != nil {
+	// Browser-based SSO authentication (must run before processCookieAuth)
+	if err := processBrowserAuth(cmd); err != nil {
 		return err
 	}
 
-	// Set verbose log output for feature probing
-	if cfg.Verbose {
-		adt.SetLogOutput(os.Stderr)
+	// Programmatic SAML SSO authentication (must run before processCookieAuth)
+	if err := processSAMLAuth(cmd); err != nil {
+		return err
+	}
+
+	// Process cookie authentication
+	if err := processCookieAuth(cmd); err != nil {
+		return err
 	}
 
 	if cfg.Verbose {
@@ -192,6 +239,8 @@ func runServer(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "[VERBOSE] SAP Language: %s\n", cfg.Language)
 		if cfg.Username != "" {
 			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: Basic (user: %s)\n", cfg.Username)
+		} else if cfg.ReauthFunc != nil {
+			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: SAML (%d cookies, re-auth on 401)\n", len(cfg.Cookies))
 		} else if len(cfg.Cookies) > 0 {
 			fmt.Fprintf(os.Stderr, "[VERBOSE] Auth: Cookie (%d cookies)\n", len(cfg.Cookies))
 		}
@@ -221,9 +270,12 @@ func runServer(cmd *cobra.Command, args []string) error {
 		if !cfg.ReadOnly && !cfg.BlockFreeSQL && cfg.AllowedOps == "" && cfg.DisallowedOps == "" && len(cfg.AllowedPackages) == 0 {
 			fmt.Fprintf(os.Stderr, "[VERBOSE] Safety: UNRESTRICTED (no safety checks active)\n")
 		}
+		if cfg.KeepAliveInterval > 0 {
+			fmt.Fprintf(os.Stderr, "[VERBOSE] Session keep-alive: %s\n", cfg.KeepAliveInterval)
+		}
 	}
 
-	// Load granular tool visibility from .vsp.json if present
+	// Load granular tool visibility and per-system settings from .vsp.json if present
 	if systemsCfg, configPath, err := config.LoadSystems(); err == nil && systemsCfg != nil {
 		if systemsCfg.Tools != nil {
 			cfg.ToolsConfig = systemsCfg.Tools
@@ -240,11 +292,28 @@ func runServer(cmd *cobra.Command, args []string) error {
 				fmt.Fprintf(os.Stderr, "[VERBOSE] Tool config loaded from %s: %d enabled, %d disabled\n", configPath, enabled, disabled)
 			}
 		}
+
+		// Load transport_attribute from default system if not already set via env
+		if cfg.TransportAttribute == "" && systemsCfg.Default != "" {
+			if sys, err := systemsCfg.GetSystem(systemsCfg.Default); err == nil && sys.TransportAttribute != "" {
+				cfg.TransportAttribute = sys.TransportAttribute
+			}
+		}
 	}
 
 	// Create and start MCP server
-	server := mcp.NewServer(cfg)
-	return server.ServeStdio()
+	srv := mcp.NewServer(cfg)
+
+	switch cfg.Transport {
+	case "http":
+		addr := cfg.HTTPAddr
+		if cfg.Verbose {
+			fmt.Fprintf(os.Stderr, "[VERBOSE] Transport: Streamable HTTP on %s\n", addr)
+		}
+		return srv.ServeHTTP(addr)
+	default:
+		return srv.ServeStdio()
+	}
 }
 
 func resolveConfig(cmd *cobra.Command) {
@@ -253,7 +322,11 @@ func resolveConfig(cmd *cobra.Command) {
 	// Cookie auth takes precedence over basic auth since it's more explicit
 	cookieAuthViaCLI := cmd.Flags().Changed("cookie-file") || cmd.Flags().Changed("cookie-string")
 	cookieAuthViaEnv := viper.GetString("COOKIE_FILE") != "" || viper.GetString("COOKIE_STRING") != ""
-	hasCookieAuth := cookieAuthViaCLI || cookieAuthViaEnv
+	browserAuth, _ := cmd.Flags().GetBool("browser-auth")
+	hasBrowserAuth := browserAuth || viper.GetBool("BROWSER_AUTH")
+	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
+	hasSAMLAuth := samlAuth || viper.GetBool("SAML_AUTH")
+	hasCookieAuth := cookieAuthViaCLI || cookieAuthViaEnv || hasBrowserAuth || hasSAMLAuth
 
 	// URL: flag > SAP_URL env
 	if cfg.BaseURL == "" {
@@ -384,11 +457,27 @@ func resolveConfig(cmd *cobra.Command) {
 		}
 	}
 
+	// Transport attribute for CR-level co-change: SAP_TRANSPORT_ATTRIBUTE env > .vsp.json
+	if v := viper.GetString("TRANSPORT_ATTRIBUTE"); v != "" {
+		cfg.TransportAttribute = strings.ToUpper(strings.TrimSpace(v))
+	}
+
 	// Terminal ID for debugger: flag > SAP_TERMINAL_ID env
 	if !cmd.Flags().Changed("terminal-id") {
 		if v := viper.GetString("TERMINAL_ID"); v != "" {
 			cfg.TerminalID = v
 		}
+	}
+
+	// Keep-alive interval: flag > SAP_KEEPALIVE env
+	if !cmd.Flags().Changed("keepalive") {
+		if v := viper.GetString("KEEPALIVE"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				cfg.KeepAliveInterval = d
+			}
+		}
+	} else {
+		cfg.KeepAliveInterval, _ = cmd.Flags().GetDuration("keepalive")
 	}
 }
 
@@ -404,6 +493,151 @@ func validateConfig() error {
 
 	// Check if we have either basic auth or cookies will be processed
 	// Cookies are checked later in processCookieAuth
+	return nil
+}
+
+func processBrowserAuth(cmd *cobra.Command) error {
+	browserAuth, _ := cmd.Flags().GetBool("browser-auth")
+	if !browserAuth && !viper.GetBool("BROWSER_AUTH") {
+		return nil
+	}
+
+	if cfg.BaseURL == "" {
+		return fmt.Errorf("--browser-auth requires --url to be set")
+	}
+
+	// Determine timeout
+	timeout, _ := cmd.Flags().GetDuration("browser-auth-timeout")
+	if !cmd.Flags().Changed("browser-auth-timeout") {
+		if v := viper.GetString("BROWSER_AUTH_TIMEOUT"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil {
+				timeout = d
+			}
+		}
+	}
+
+	// Determine browser executable
+	browserExec, _ := cmd.Flags().GetString("browser-exec")
+	if browserExec == "" {
+		browserExec = viper.GetString("BROWSER_EXEC")
+	}
+
+	ctx := cmd.Context()
+	cookies, err := adt.BrowserLogin(ctx, cfg.BaseURL, cfg.InsecureSkipVerify, timeout, browserExec, cfg.Verbose)
+	if err != nil {
+		return fmt.Errorf("browser authentication failed: %w", err)
+	}
+
+	cfg.Cookies = cookies
+
+	// Save cookies to file if requested
+	cookieSave, _ := cmd.Flags().GetString("cookie-save")
+	if cookieSave == "" {
+		cookieSave = viper.GetString("COOKIE_SAVE")
+	}
+	if cookieSave != "" {
+		if err := adt.SaveCookiesToFile(cookies, cfg.BaseURL, cookieSave); err != nil {
+			fmt.Fprintf(os.Stderr, "[BROWSER-AUTH] Warning: failed to save cookies: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[BROWSER-AUTH] Cookies saved to %s (reuse with --cookie-file). Note: file contains session secrets — do not share or commit.\n", cookieSave)
+		}
+	}
+
+	return nil
+}
+
+func processSAMLAuth(cmd *cobra.Command) error {
+	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
+	if !samlAuth && !viper.GetBool("SAML_AUTH") {
+		return nil
+	}
+
+	if cfg.BaseURL == "" {
+		return fmt.Errorf("--saml-auth requires --url to be set")
+	}
+
+	// Resolve credential source. Priority: credential-cmd > env vars > flags.
+	credCmdStr, _ := cmd.Flags().GetString("credential-cmd")
+	if credCmdStr == "" {
+		credCmdStr = viper.GetString("CREDENTIAL_CMD")
+		if credCmdStr != "" && cfg.Verbose {
+			fmt.Fprintf(os.Stderr, "[SAML-AUTH] Warning: credential-cmd sourced from environment variable\n")
+		}
+	}
+
+	var credProvider adt.CredentialProvider
+
+	if credCmdStr != "" {
+		// Credential command mode: parse and execute external command on each auth.
+		credArgs := adt.ParseCredentialCmd(credCmdStr)
+		if len(credArgs) == 0 {
+			return fmt.Errorf("--credential-cmd: empty command after parsing")
+		}
+		credProvider = func(ctx context.Context) ([]byte, []byte, error) {
+			user, pass, err := adt.RunCredentialCmd(ctx, credArgs, cfg.Verbose)
+			if err != nil {
+				return nil, nil, err
+			}
+			return []byte(user), []byte(pass), nil
+		}
+	} else {
+		// Direct credentials mode: env vars > flags.
+		samlUser, _ := cmd.Flags().GetString("saml-user")
+		if samlUser == "" {
+			samlUser = viper.GetString("SAML_USER")
+		}
+		samlPassword, _ := cmd.Flags().GetString("saml-password")
+		if samlPassword == "" {
+			samlPassword = viper.GetString("SAML_PASSWORD")
+		}
+
+		if samlUser == "" || samlPassword == "" {
+			return fmt.Errorf("--saml-auth requires credentials: use --credential-cmd, --saml-user/--saml-password, or SAP_SAML_USER/SAP_SAML_PASSWORD env vars")
+		}
+
+		// Build credential provider that re-reads env vars on each call.
+		// This supports credential rotation and avoids long-term retention.
+		flagUser := samlUser
+		flagPassword := samlPassword
+		credProvider = func(ctx context.Context) ([]byte, []byte, error) {
+			u := os.Getenv("SAP_SAML_USER")
+			if u == "" {
+				u = flagUser
+			}
+			p := os.Getenv("SAP_SAML_PASSWORD")
+			if p == "" {
+				p = flagPassword
+			}
+			return []byte(u), []byte(p), nil
+		}
+	}
+
+	ctx := cmd.Context()
+	cookies, err := adt.SAMLLogin(ctx, cfg.BaseURL, credProvider, cfg.InsecureSkipVerify, cfg.Verbose)
+	if err != nil {
+		return fmt.Errorf("SAML authentication failed: %w", err)
+	}
+
+	cfg.Cookies = cookies
+
+	// Set re-auth function for 401 recovery.
+	cfg.ReauthFunc = func(ctx context.Context) (map[string]string, error) {
+		return adt.SAMLLogin(ctx, cfg.BaseURL, credProvider, cfg.InsecureSkipVerify, cfg.Verbose)
+	}
+
+	// Save cookies if requested.
+	cookieSave, _ := cmd.Flags().GetString("cookie-save")
+	if cookieSave == "" {
+		cookieSave = viper.GetString("COOKIE_SAVE")
+	}
+	if cookieSave != "" {
+		if err := adt.SaveCookiesToFile(cookies, cfg.BaseURL, cookieSave); err != nil {
+			fmt.Fprintf(os.Stderr, "[SAML-AUTH] Warning: failed to save cookies: %v\n", err)
+		} else {
+			fmt.Fprintf(os.Stderr, "[SAML-AUTH] Cookies saved to %s (reuse with --cookie-file). Note: file contains session secrets — do not share or commit.\n", cookieSave)
+		}
+	}
+
 	return nil
 }
 
@@ -430,13 +664,22 @@ func processCookieAuth(cmd *cobra.Command) error {
 	if cookieString != "" {
 		authMethods++
 	}
+	// Browser auth already populated cfg.Cookies in processBrowserAuth
+	if len(cfg.Cookies) > 0 {
+		authMethods++
+	}
 
 	if authMethods > 1 {
-		return fmt.Errorf("only one authentication method can be used at a time (basic auth, cookie-file, or cookie-string)")
+		return fmt.Errorf("only one authentication method can be used at a time (basic auth, cookie-file, cookie-string, browser-auth, or saml-auth)")
 	}
 
 	if authMethods == 0 {
-		return fmt.Errorf("authentication required. Use --user/--password, --cookie-file, or --cookie-string")
+		return fmt.Errorf("authentication required. Use --user/--password, --cookie-file, --cookie-string, --browser-auth, or --saml-auth")
+	}
+
+	// If cookies already set by browser auth, we're done
+	if len(cfg.Cookies) > 0 {
+		return nil
 	}
 
 	// Process cookie file

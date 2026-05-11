@@ -45,6 +45,13 @@ func newTestResponse(body string) *http.Response {
 	}
 }
 
+func newSearchResponse(uri, objType, name, pkg string) *http.Response {
+	return newTestResponse(`<?xml version="1.0" encoding="UTF-8"?>
+<adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
+  <adtcore:objectReference adtcore:uri="` + uri + `" adtcore:type="` + objType + `" adtcore:name="` + name + `" adtcore:packageName="` + pkg + `"/>
+</adtcore:objectReferences>`)
+}
+
 func TestClient_SearchObject(t *testing.T) {
 	searchResponse := `<?xml version="1.0" encoding="UTF-8"?>
 <adtcore:objectReferences xmlns:adtcore="http://www.sap.com/adt/core">
@@ -73,6 +80,223 @@ func TestClient_SearchObject(t *testing.T) {
 
 	if results[0].Name != "ZTEST" {
 		t.Errorf("Name = %v, want ZTEST", results[0].Name)
+	}
+}
+
+func TestClient_CheckObjectPackageSafety_NormalizesObjectURLs(t *testing.T) {
+	tests := []struct {
+		name      string
+		objectURL string
+		searchURI string
+	}{
+		{
+			name:      "source main URL resolves to parent object",
+			objectURL: "/sap/bc/adt/programs/programs/ZTEST/source/main",
+			searchURI: "/sap/bc/adt/programs/programs/ztest",
+		},
+		{
+			name:      "class include URL resolves to parent class",
+			objectURL: "/sap/bc/adt/oo/classes/ZCL_TEST/includes/testclasses",
+			searchURI: "/sap/bc/adt/oo/classes/zcl_test",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockTransportClient{
+				responses: map[string]*http.Response{
+					"search":    newSearchResponse(tt.searchURI, "PROG/P", "ZTEST", "$TMP"),
+					"discovery": newTestResponse("OK"),
+				},
+			}
+
+			cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
+			transport := NewTransportWithClient(cfg, mock)
+			client := NewClientWithTransport(cfg, transport)
+
+			if err := client.checkObjectPackageSafety(context.Background(), tt.objectURL); err != nil {
+				t.Fatalf("checkObjectPackageSafety failed: %v", err)
+			}
+		})
+	}
+}
+
+func TestClient_UpdateSource_EnforcesAllowedPackages(t *testing.T) {
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"search":    newSearchResponse("/sap/bc/adt/programs/programs/ztest", "PROG/P", "ZTEST", "ZOTHER"),
+			"discovery": newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	err := client.UpdateSource(context.Background(), "/sap/bc/adt/programs/programs/ZTEST/source/main", "REPORT ztest.", "lock123", "")
+	if err == nil {
+		t.Fatal("UpdateSource should fail when object package is not allowed")
+	}
+	if !strings.Contains(err.Error(), "operations on package 'ZOTHER'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_DeleteObject_EnforcesAllowedPackages(t *testing.T) {
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"search":    newSearchResponse("/sap/bc/adt/programs/programs/ztest", "PROG/P", "ZTEST", "ZOTHER"),
+			"discovery": newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	err := client.DeleteObject(context.Background(), "/sap/bc/adt/programs/programs/ZTEST", "lock123", "")
+	if err == nil {
+		t.Fatal("DeleteObject should fail when object package is not allowed")
+	}
+	if !strings.Contains(err.Error(), "operations on package 'ZOTHER'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_CreateTestInclude_EnforcesAllowedPackages(t *testing.T) {
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"search":    newSearchResponse("/sap/bc/adt/oo/classes/zcl_test", "CLAS/OC", "ZCL_TEST", "ZOTHER"),
+			"discovery": newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	err := client.CreateTestInclude(context.Background(), "ZCL_TEST", "lock123", "")
+	if err == nil {
+		t.Fatal("CreateTestInclude should fail when parent class package is not allowed")
+	}
+	if !strings.Contains(err.Error(), "operations on package 'ZOTHER'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_WriteMessageClassTexts_EnforcesAllowedPackages(t *testing.T) {
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"search":    newSearchResponse("/sap/bc/adt/messageclass/ztest_mc", "MSAG", "ZTEST_MC", "ZOTHER"),
+			"discovery": newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass", WithAllowedPackages("$TMP"))
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	err := client.WriteMessageClassTexts(context.Background(), "ZTEST_MC", "EN", nil, "lock123", "")
+	if err == nil {
+		t.Fatal("WriteMessageClassTexts should fail when object package is not allowed")
+	}
+	if !strings.Contains(err.Error(), "operations on package 'ZOTHER'") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestClient_GetAPIReleaseState(t *testing.T) {
+	xmlResponse := `<?xml version="1.0" encoding="UTF-8"?>
+<apiRelease>
+  <releasableObject uri="/sap/bc/adt/oo/classes/cl_abap_typedescr" type="CLAS" name="CL_ABAP_TYPEDESCR"/>
+  <c1Release contract="C1" useInKeyUserApps="false" useInSAPCloudPlatform="true" name="CL_ABAP_TYPEDESCR">
+    <status state="RELEASED" stateDescription="Released"/>
+  </c1Release>
+  <apiCatalogData isAnyAssignmentPossible="true" isAnyContractReleased="true"/>
+</apiRelease>`
+
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"apireleases": newTestResponse(xmlResponse),
+			"discovery":   newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	state, err := client.GetAPIReleaseState(context.Background(), "/sap/bc/adt/oo/classes/cl_abap_typedescr")
+	if err != nil {
+		t.Fatalf("GetAPIReleaseState failed: %v", err)
+	}
+
+	if state.C1 == nil {
+		t.Fatal("C1 release should not be nil")
+	}
+	if state.C1.Status.State != "RELEASED" {
+		t.Errorf("C1 Status.State = %q, want RELEASED", state.C1.Status.State)
+	}
+	if state.C1.UseInSAPCloudPlatform != true {
+		t.Error("C1 UseInSAPCloudPlatform should be true")
+	}
+	if state.C1.UseInKeyUserApps {
+		t.Error("C1 UseInKeyUserApps should be false")
+	}
+	if !state.Catalog.IsAnyContractReleased {
+		t.Error("Catalog.IsAnyContractReleased should be true")
+	}
+
+	// Verify the request URL uses the apireleases endpoint
+	if len(mock.requests) == 0 {
+		t.Fatal("No requests recorded")
+	}
+	lastReq := mock.requests[len(mock.requests)-1]
+	if !strings.Contains(lastReq.URL.Path, "apireleases") {
+		t.Errorf("Request path %q should contain 'apireleases'", lastReq.URL.Path)
+	}
+}
+
+func TestClient_GetAPIReleaseState_WithDeprecation(t *testing.T) {
+	xmlResponse := `<?xml version="1.0" encoding="UTF-8"?>
+<apiRelease>
+  <releasableObject uri="/sap/bc/adt/oo/classes/cl_old_api" type="CLAS" name="CL_OLD_API"/>
+  <c1Release contract="C1" useInKeyUserApps="false" useInSAPCloudPlatform="true" name="CL_OLD_API">
+    <status state="DEPRECATED" stateDescription="Deprecated"/>
+    <successors>
+      <successor uri="/sap/bc/adt/oo/classes/cl_abap_typedescr_v2" type="CLAS" name="CL_ABAP_TYPEDESCR_V2"/>
+    </successors>
+  </c1Release>
+  <apiCatalogData isAnyAssignmentPossible="true" isAnyContractReleased="true"/>
+</apiRelease>`
+
+	mock := &mockTransportClient{
+		responses: map[string]*http.Response{
+			"apireleases": newTestResponse(xmlResponse),
+			"discovery":   newTestResponse("OK"),
+		},
+	}
+
+	cfg := NewConfig("https://sap.example.com:44300", "user", "pass")
+	transport := NewTransportWithClient(cfg, mock)
+	client := NewClientWithTransport(cfg, transport)
+
+	state, err := client.GetAPIReleaseState(context.Background(), "/sap/bc/adt/oo/classes/cl_old_api")
+	if err != nil {
+		t.Fatalf("GetAPIReleaseState failed: %v", err)
+	}
+
+	if state.C1 == nil {
+		t.Fatal("C1 release should not be nil")
+	}
+	if state.C1.Status.State != "DEPRECATED" {
+		t.Errorf("C1 Status.State = %q, want DEPRECATED", state.C1.Status.State)
+	}
+	if len(state.C1.Successors) == 0 {
+		t.Fatal("C1 Successors should not be empty")
+	}
+	if state.C1.Successors[0].URI != "/sap/bc/adt/oo/classes/cl_abap_typedescr_v2" {
+		t.Errorf("Successor URI = %q, want /sap/bc/adt/oo/classes/cl_abap_typedescr_v2", state.C1.Successors[0].URI)
 	}
 }
 

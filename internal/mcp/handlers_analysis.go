@@ -32,6 +32,26 @@ func (s *Server) routeAnalysisAction(ctx context.Context, action, objectType, ob
 		return s.callHandler(ctx, s.handleCompareCallGraphs, params)
 	case "trace_execution":
 		return s.callHandler(ctx, s.handleTraceExecution, params)
+	case "check_boundaries":
+		return s.callHandler(ctx, s.handleCheckBoundaries, params)
+	case "graph_stats":
+		return s.callHandler(ctx, s.handleGraphStats, params)
+	case "co_change":
+		return s.callHandler(ctx, s.handleCoChange, params)
+	case "impact":
+		return s.callHandler(ctx, s.handleImpact, params)
+	case "where_used_config":
+		return s.callHandler(ctx, s.handleWhereUsedConfig, params)
+	case "usage_examples":
+		return s.callHandler(ctx, s.handleUsageExamples, params)
+	case "health":
+		return s.callHandler(ctx, s.handleHealth, params)
+	case "cr_history":
+		return s.callHandler(ctx, s.handleCRHistory, params)
+	case "tr_boundaries":
+		return s.callHandler(ctx, s.handleTransportBoundaries, params)
+	case "cr_boundaries":
+		return s.callHandler(ctx, s.handleCRBoundaries, params)
 	}
 	return nil, false, nil
 }
@@ -39,7 +59,7 @@ func (s *Server) routeAnalysisAction(ctx context.Context, action, objectType, ob
 // --- Code Analysis Infrastructure Handlers ---
 
 func (s *Server) handleGetCallGraph(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
@@ -50,13 +70,13 @@ func (s *Server) handleGetCallGraph(ctx context.Context, request mcp.CallToolReq
 		MaxResults: 100,
 	}
 
-	if dir, ok := request.Params.Arguments["direction"].(string); ok && dir != "" {
+	if dir, ok := request.GetArguments()["direction"].(string); ok && dir != "" {
 		opts.Direction = dir
 	}
-	if depth, ok := request.Params.Arguments["max_depth"].(float64); ok && depth > 0 {
+	if depth, ok := request.GetArguments()["max_depth"].(float64); ok && depth > 0 {
 		opts.MaxDepth = int(depth)
 	}
-	if max, ok := request.Params.Arguments["max_results"].(float64); ok && max > 0 {
+	if max, ok := request.GetArguments()["max_results"].(float64); ok && max > 0 {
 		opts.MaxResults = int(max)
 	}
 
@@ -70,13 +90,13 @@ func (s *Server) handleGetCallGraph(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleGetObjectStructure(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectName, ok := request.Params.Arguments["object_name"].(string)
+	objectName, ok := request.GetArguments()["object_name"].(string)
 	if !ok || objectName == "" {
 		return newToolResultError("object_name is required"), nil
 	}
 
 	maxResults := 100
-	if max, ok := request.Params.Arguments["max_results"].(float64); ok && max > 0 {
+	if max, ok := request.GetArguments()["max_results"].(float64); ok && max > 0 {
 		maxResults = int(max)
 	}
 
@@ -90,13 +110,13 @@ func (s *Server) handleGetObjectStructure(ctx context.Context, request mcp.CallT
 }
 
 func (s *Server) handleGetCallersOf(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
 
 	maxDepth := 5
-	if depth, ok := request.Params.Arguments["max_depth"].(float64); ok && depth > 0 {
+	if depth, ok := request.GetArguments()["max_depth"].(float64); ok && depth > 0 {
 		maxDepth = int(depth)
 	}
 
@@ -120,13 +140,13 @@ func (s *Server) handleGetCallersOf(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleGetCalleesOf(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
 
 	maxDepth := 5
-	if depth, ok := request.Params.Arguments["max_depth"].(float64); ok && depth > 0 {
+	if depth, ok := request.GetArguments()["max_depth"].(float64); ok && depth > 0 {
 		maxDepth = int(depth)
 	}
 
@@ -150,18 +170,18 @@ func (s *Server) handleGetCalleesOf(ctx context.Context, request mcp.CallToolReq
 }
 
 func (s *Server) handleAnalyzeCallGraph(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
 
 	direction := "callees"
-	if dir, ok := request.Params.Arguments["direction"].(string); ok && dir != "" {
+	if dir, ok := request.GetArguments()["direction"].(string); ok && dir != "" {
 		direction = dir
 	}
 
 	maxDepth := 5
-	if depth, ok := request.Params.Arguments["max_depth"].(float64); ok && depth > 0 {
+	if depth, ok := request.GetArguments()["max_depth"].(float64); ok && depth > 0 {
 		maxDepth = int(depth)
 	}
 
@@ -190,12 +210,12 @@ func (s *Server) handleAnalyzeCallGraph(ctx context.Context, request mcp.CallToo
 }
 
 func (s *Server) handleCompareCallGraphs(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
 
-	traceDataStr, ok := request.Params.Arguments["trace_data"].(string)
+	traceDataStr, ok := request.GetArguments()["trace_data"].(string)
 	if !ok || traceDataStr == "" {
 		return newToolResultError("trace_data is required (JSON array of edges)"), nil
 	}
@@ -239,7 +259,7 @@ func (s *Server) handleCompareCallGraphs(ctx context.Context, request mcp.CallTo
 }
 
 func (s *Server) handleTraceExecution(ctx context.Context, request mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	objectURI, ok := request.Params.Arguments["object_uri"].(string)
+	objectURI, ok := request.GetArguments()["object_uri"].(string)
 	if !ok || objectURI == "" {
 		return newToolResultError("object_uri is required"), nil
 	}
@@ -249,21 +269,21 @@ func (s *Server) handleTraceExecution(ctx context.Context, request mcp.CallToolR
 		MaxDepth:  5,
 	}
 
-	if maxDepth, ok := request.Params.Arguments["max_depth"].(float64); ok {
+	if maxDepth, ok := request.GetArguments()["max_depth"].(float64); ok {
 		opts.MaxDepth = int(maxDepth)
 	}
 
-	if runTests, ok := request.Params.Arguments["run_tests"].(bool); ok {
+	if runTests, ok := request.GetArguments()["run_tests"].(bool); ok {
 		opts.RunTests = runTests
 	}
 
-	if testURI, ok := request.Params.Arguments["test_object_uri"].(string); ok && testURI != "" {
+	if testURI, ok := request.GetArguments()["test_object_uri"].(string); ok && testURI != "" {
 		opts.TestObjectURI = testURI
 	} else if opts.RunTests {
 		opts.TestObjectURI = objectURI // Default to same object
 	}
 
-	if traceUser, ok := request.Params.Arguments["trace_user"].(string); ok && traceUser != "" {
+	if traceUser, ok := request.GetArguments()["trace_user"].(string); ok && traceUser != "" {
 		opts.TraceUser = traceUser
 	}
 
