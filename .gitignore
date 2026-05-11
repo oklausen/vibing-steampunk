@@ -102,3 +102,6 @@ cookie-*
 # Third-party source drops evaluated in place
 quickjs/
 quickjs.zip
+
+# Local SCC credentials (loaded by scripts\Start-SAP-A4H.ps1)
+scripts/.scc-credentials.ps1
